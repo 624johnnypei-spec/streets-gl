@@ -52,7 +52,7 @@ const InfoModalPanel: React.FC<{
 		<ModalCategoryContainer>
 			<ModalCategory>
 				<ModalPar isSmall={true}>
-					Streets GL v{VERSION}
+					Cancer · built on Streets GL v{VERSION}
 					{' '}
 					<ModalParAnchor
 						href={`https://github.com/StrandedKitty/streets-gl/commit/${COMMIT_SHA}`}

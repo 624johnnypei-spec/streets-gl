@@ -26,7 +26,7 @@ const LoadingScreen: React.FC = () => {
 		onTransitionEnd={(): void => setShowSelf(false)}
 	>
 		<div className={classes.loadingScreen}>
-			<div className={classes.loadingScreen__title}>Streets GL</div>
+			<div className={classes.loadingScreen__title}>Cancer</div>
 			<div className={classes.loadingScreen__progressBar}>
 				<div className={classes.loadingScreen__progressBar__inner} style={{width: `${loadingProgress * 100}%`}}/>
 			</div>
