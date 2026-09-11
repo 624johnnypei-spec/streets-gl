@@ -386,7 +386,7 @@ const SelectionPanel: React.FC = () => {
 					{
 						tags ? (
 							<div className={styles.tags}>{getTags(tags)}</div>
-						) : failed && !pl ? (
+						) : failed && pl ? null : failed ? (
 							<div className={styles.error}>Couldn&apos;t load building details. Check your connection and reselect the building.</div>
 						) : (
 							<Skeleton className={styles.skeleton} height={'135px'} borderRadius={'12px'}/>
