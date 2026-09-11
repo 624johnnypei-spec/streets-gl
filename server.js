@@ -220,21 +220,42 @@ async function findNearby(lat, lon, category, radius = 800) {
 const MANEUVER = {turn: 'Turn', 'new name': 'Continue', depart: 'Head', arrive: 'Arrive', merge: 'Merge', fork: 'Keep', 'end of road': 'Turn', continue: 'Continue', roundabout: 'Enter the roundabout', rotary: 'Enter the roundabout', 'on ramp': 'Take the ramp', 'off ramp': 'Take the exit'};
 
 async function getRoute(from, to, mode) {
+	return getRouteVia(from, [to], mode);
+}
+
+// One route through several stops in order. stops: [{lat, lon, label?}]; the last is the final destination.
+async function getRouteVia(from, stops, mode) {
 	const profile = mode === 'bike' ? 'routed-bike' : 'routed-foot';
-	const url = `https://routing.openstreetmap.de/${profile}/route/v1/driving/${(+from.lon).toFixed(6)},${(+from.lat).toFixed(6)};${(+to.lon).toFixed(6)},${(+to.lat).toFixed(6)}?overview=full&geometries=geojson&steps=true`;
-	return cached(`route:${url}`, 30 * 60e3, async () => {
+	const pts = [from, ...stops].map(p => `${(+p.lon).toFixed(6)},${(+p.lat).toFixed(6)}`).join(';');
+	const url = `https://routing.openstreetmap.de/${profile}/route/v1/driving/${pts}?overview=full&geometries=geojson&steps=true`;
+	const r = await cached(`route:${url}`, 30 * 60e3, async () => {
 		const d = await getJSON(url);
 		if (d.code !== 'Ok' || !d.routes?.length) throw new Error(`no ${mode} route found`);
-		const r = d.routes[0];
-		const steps = r.legs.flatMap(l => l.steps).map(st => {
-			const m = st.maneuver;
-			const verb = MANEUVER[m.type] || 'Continue';
-			const dir = m.type === 'arrive' ? '' : (m.modifier ? ` ${m.modifier}` : '');
-			const onto = st.name ? ` onto ${st.name}` : '';
-			return {text: m.type === 'arrive' ? 'Arrive at destination' : `${verb}${dir}${onto}`.replace('Head straight', 'Head'), lat: m.location[1], lon: m.location[0], distance_m: Math.round(st.distance)};
-		});
-		return {mode: mode === 'bike' ? 'bike' : 'walk', distance_m: Math.round(r.distance), duration_s: Math.round(r.duration), coords: r.geometry.coordinates.map(([lon, lat]) => [lat, lon]), steps};
+		return d.routes[0];
 	});
+	const steps = r.legs.flatMap((l, legIdx) => l.steps.map(st => {
+		const m = st.maneuver;
+		if (m.type === 'arrive') {
+			const label = stops[legIdx]?.label;
+			return {text: label ? `Arrive at ${label}` : 'Arrive at destination', lat: m.location[1], lon: m.location[0], distance_m: Math.round(st.distance)};
+		}
+		if (m.type === 'depart' && legIdx > 0) {
+			return {text: `Continue from ${stops[legIdx - 1]?.label || 'stop'}`, lat: m.location[1], lon: m.location[0], distance_m: Math.round(st.distance)};
+		}
+		const verb = MANEUVER[m.type] || 'Continue';
+		const dir = m.modifier ? ` ${m.modifier}` : '';
+		const onto = st.name ? ` onto ${st.name}` : '';
+		return {text: `${verb}${dir}${onto}`.replace('Head straight', 'Head'), lat: m.location[1], lon: m.location[0], distance_m: Math.round(st.distance)};
+	}));
+	return {
+		mode: mode === 'bike' ? 'bike' : 'walk',
+		distance_m: Math.round(r.distance),
+		duration_s: Math.round(r.duration),
+		coords: r.geometry.coordinates.map(([lon, lat]) => [lat, lon]),
+		steps,
+		// Where each stop is (the real place, not the snapped road point), for map markers
+		waypoints: stops.map((p, i) => ({lat: +p.lat, lon: +p.lon, label: p.label || `Stop ${i + 1}`}))
+	};
 }
 
 // ---------- OSM feature details (selection panel) ----------
@@ -420,8 +441,12 @@ const TOOLS = [
 		parameters: {type: 'object', properties: {lat: {type: 'number'}, lon: {type: 'number'}, pitch: {type: 'number'}, yaw: {type: 'number'}, distance: {type: 'number'}, label: {type: 'string'}}, required: ['lat', 'lon']}}},
 	{type: 'function', function: {name: 'set_time', description: 'Set the map\'s simulated date/time (drives sun position, sky and lighting). ISO 8601 with timezone, e.g. 2026-09-11T17:56:00+09:00.',
 		parameters: {type: 'object', properties: {iso: {type: 'string'}}, required: ['iso']}}},
-	{type: 'function', function: {name: 'start_navigation', description: 'Plan a real walking or cycling route to a destination and start turn-by-turn navigation in the 3D map (overview first, then a 45-degree follow camera). Starts from the camera position unless from_lat/from_lon are given. Returns distance and duration.',
-		parameters: {type: 'object', properties: {lat: {type: 'number'}, lon: {type: 'number'}, mode: {type: 'string', enum: ['walk', 'bike']}, label: {type: 'string'}, from_lat: {type: 'number'}, from_lon: {type: 'number'}}, required: ['lat', 'lon', 'mode']}}},
+	{type: 'function', function: {name: 'start_navigation', description: 'Plan a real walking or cycling route and start turn-by-turn navigation in the 3D map. For several destinations ("to Tokyo Tower then to Skytree") pass them ALL in order in `stops` (search each one first) — one route visits them in order and each stop is marked on the map. Starts from the user\'s location (or camera) unless from_lat/from_lon are given. Returns distance and duration.',
+		parameters: {type: 'object', properties: {
+			stops: {type: 'array', description: 'Ordered destinations; the last is the final one.', items: {type: 'object', properties: {lat: {type: 'number'}, lon: {type: 'number'}, label: {type: 'string'}}, required: ['lat', 'lon', 'label']}},
+			lat: {type: 'number', description: 'Single destination (if no stops)'}, lon: {type: 'number'}, label: {type: 'string'},
+			mode: {type: 'string', enum: ['walk', 'bike']}, from_lat: {type: 'number'}, from_lon: {type: 'number'}
+		}, required: ['mode']}}},
 	{type: 'function', function: {name: 'show_places', description: 'Pin a short list of places in the UI so the user can click to fly to each one.',
 		parameters: {type: 'object', properties: {places: {type: 'array', items: {type: 'object', properties: {name: {type: 'string'}, lat: {type: 'number'}, lon: {type: 'number'}, note: {type: 'string'}}, required: ['name', 'lat', 'lon']}}}, required: ['places']}}}
 ];
@@ -432,8 +457,9 @@ function systemPrompt(ctx) {
 Current Tokyo time: ${now}. Camera is looking at lat ${ctx.lat?.toFixed?.(5)}, lon ${ctx.lon?.toFixed?.(5)}.
 Always use tools for facts — never invent places, coordinates or weather. Typical flow: search_place / find_nearby -> get_weather when timing or outdoors matters -> fly_to the best answer (and set_time when the user asks about a moment like sunset or tonight) -> show_places for options.
 When the user wants to go somewhere (walk, cycle, take me, directions), call start_navigation instead of fly_to; suggest cycling for >2 km and warn if rain is likely during the trip.
+For trips with several destinations ("to A then B"), search_place each one, then call start_navigation ONCE with all of them in \`stops\`, in the order given.
 Choose cinematic cameras: pitch 35-60, distance 250-900 for streets, 1500-4000 for districts.
-Reply in the user's language (Japanese or English), max 4 short sentences, concrete and friendly, plain text only (no markdown, no asterisks). Mention the weather when it affects the plan.`;
+Reply in the language the user wrote in (English if they wrote English, Japanese if Japanese), max 4 short sentences, concrete and friendly, plain text only (no markdown, no asterisks). Mention the weather when it affects the plan.`;
 }
 
 async function callAI(messages) {
@@ -446,9 +472,10 @@ async function callAI(messages) {
 	return (await r.json()).choices[0].message;
 }
 
-async function runAgent({messages = [], camera = {}}) {
+async function runAgent({messages = [], camera = {}, me = null}) {
 	if (!AI_KEY) throw new Error('AIAND_API_KEY is not set');
-	const convo = [{role: 'system', content: systemPrompt(camera)}, ...messages.slice(-12)];
+	const where = me && Number.isFinite(me.lat) ? ` The user's own location ("where I am") is lat ${(+me.lat).toFixed(5)}, lon ${(+me.lon).toFixed(5)}${me.label ? ` (${me.label})` : ''}.` : '';
+	const convo = [{role: 'system', content: systemPrompt(camera) + where}, ...messages.slice(-12)];
 	const actions = [];
 	const trace = [];
 
@@ -471,10 +498,12 @@ async function runAgent({messages = [], camera = {}}) {
 					case 'find_nearby': result = await findNearby(args.lat, args.lon, args.category, args.radius_m); break;
 					case 'get_weather': result = await getWeather(args.lat, args.lon); break;
 					case 'start_navigation': {
-						const from = args.from_lat != null ? {lat: args.from_lat, lon: args.from_lon} : camera;
-						const route = await getRoute(from, args, args.mode);
-						actions.push({type: 'navigate', label: args.label, route});
-						result = {ok: true, mode: route.mode, distance_m: route.distance_m, minutes: Math.round(route.duration_s / 60), first_steps: route.steps.slice(0, 3).map(x => x.text)};
+						const from = args.from_lat != null ? {lat: args.from_lat, lon: args.from_lon} : (me || camera);
+						const stops = Array.isArray(args.stops) && args.stops.length ? args.stops : [{lat: args.lat, lon: args.lon, label: args.label}];
+						const route = await getRouteVia(from, stops, args.mode);
+						const label = stops.map(x => x.label).filter(Boolean).join(' → ') || args.label;
+						actions.push({type: 'navigate', label, route});
+						result = {ok: true, mode: route.mode, distance_m: route.distance_m, minutes: Math.round(route.duration_s / 60), stops: stops.map(x => x.label), first_steps: route.steps.slice(0, 3).map(x => x.text)};
 						break;
 					}
 					case 'fly_to': case 'set_time': case 'show_places':

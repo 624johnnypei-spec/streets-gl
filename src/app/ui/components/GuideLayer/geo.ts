@@ -13,6 +13,8 @@ export interface Route {
 	duration_s: number;
 	coords: LatLon[];
 	steps: RouteStep[];
+	// Multi-stop trips: the places visited, in order (the last is the destination)
+	waypoints?: {lat: number; lon: number; label: string}[];
 }
 
 const R = 6371e3;

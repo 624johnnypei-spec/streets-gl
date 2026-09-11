@@ -405,7 +405,7 @@ const GuideLayer: React.FC = () => {
 		const usableH = phone ? 0.38 : 0.78;
 		const usableW = phone ? 0.88 : Math.min(0.9, Math.max(0.45, (window.innerWidth - 720) / window.innerWidth));
 		const tanHalf = Math.tan(20 * Math.PI / 180); // default 40° vertical FOV
-		const pad = 1.2;
+		const pad = 1.4; // room for stop labels and the top controls
 		const distance = Math.min(Math.max(
 			(extentNS * pad) / (usableH * 2 * tanHalf),
 			(extentEW * pad) / (usableW * aspect * 2 * tanHalf),
@@ -690,8 +690,12 @@ const GuideLayer: React.FC = () => {
 	// ---------- AI agent ----------
 
 	const applyActions = useCallback((list: AgentAction[]): void => {
+		// A new route shows its own overview; don't let a camera move in the same reply override it.
+		const routing = list.some(a => a.type === 'navigate');
+		if (routing) setCmdOpen(false); // reveal the route overview
 		for (const a of list) {
 			if (a.type === 'fly_to') {
+				if (routing) continue;
 				if (navRef.current?.phase === 'follow') pause();
 				actions.goToState(a.lat, a.lon, a.pitch ?? 50, a.yaw ?? readCamera(actions).yaw, a.distance ?? 600);
 			} else if (a.type === 'set_time') {
@@ -704,10 +708,24 @@ const GuideLayer: React.FC = () => {
 				setPlaces(a.places ?? []);
 			} else if (a.type === 'navigate' && a.route) {
 				const c = a.route.coords;
-				startRoute(a.route, a.label ?? 'Destination', c[0], c[c.length - 1]);
+				const last = a.route.waypoints?.[a.route.waypoints.length - 1];
+				startRoute(a.route, a.label ?? 'Destination', c[0], last ? [last.lat, last.lon] : c[c.length - 1]);
 			}
 		}
 	}, [actions, pause, startRoute]);
+
+	// "Where I am": chosen start point, else the browser location (quick), else nothing (server uses the camera).
+	const whereAmI = useCallback(async (): Promise<{lat: number; lon: number; label: string} | null> => {
+		if (originRef.current) return {lat: originRef.current.pos[0], lon: originRef.current.pos[1], label: originRef.current.label};
+		if (!navigator.geolocation) return null;
+		return new Promise(resolve => {
+			navigator.geolocation.getCurrentPosition(
+				p => resolve({lat: p.coords.latitude, lon: p.coords.longitude, label: 'your location'}),
+				() => resolve(null),
+				{timeout: 2000, maximumAge: 300000}
+			);
+		});
+	}, []);
 
 	const send = useCallback(async (text: string): Promise<void> => {
 		const content = text.trim();
@@ -721,7 +739,7 @@ const GuideLayer: React.FC = () => {
 			const r = await fetch('/api/agent', {
 				method: 'POST',
 				headers: {'Content-Type': 'application/json'},
-				body: JSON.stringify({messages: history.map(m => ({role: m.role, content: m.content})), camera: readCamera(actions)})
+				body: JSON.stringify({messages: history.map(m => ({role: m.role, content: m.content})), camera: readCamera(actions), me: await whereAmI()})
 			});
 			const data = await r.json();
 			if (!r.ok) throw new Error(data.error);
@@ -732,7 +750,7 @@ const GuideLayer: React.FC = () => {
 		} finally {
 			setBusy(false);
 		}
-	}, [actions, applyActions, busy, messages]);
+	}, [actions, applyActions, busy, messages, whereAmI]);
 
 	const runDemo = useCallback((d: Demo): void => {
 		setDemo(d.id);
@@ -1059,6 +1077,39 @@ function drawRoute(ctx: CanvasRenderingContext2D, actions: UIActions, nav: NavSt
 		ctx.strokeStyle = passed ? 'rgba(90, 96, 106, 0.9)' : (isNext ? '#2f7bff' : colorAt(off));
 		ctx.stroke();
 	});
+
+	// Multi-stop trips: numbered circles with names at each place you visit.
+	const stops = nav.path.route.waypoints ?? [];
+	ctx.font = '700 12px Inter, "Hiragino Kaku Gothic ProN", sans-serif';
+	ctx.textAlign = 'center';
+	ctx.textBaseline = 'middle';
+	stops.forEach((wp, i) => {
+		const p = actions.projectLatLon(wp.lat, wp.lon);
+		if (!p) return;
+		const final = i === stops.length - 1;
+		ctx.beginPath();
+		ctx.arc(p[0], p[1], 22, 0, Math.PI * 2);
+		ctx.fillStyle = final ? 'rgba(20, 22, 26, 0.18)' : 'rgba(47, 123, 255, 0.2)';
+		ctx.fill();
+		ctx.beginPath();
+		ctx.arc(p[0], p[1], 12, 0, Math.PI * 2);
+		ctx.fillStyle = final ? '#14161A' : '#2f7bff';
+		ctx.fill();
+		ctx.lineWidth = 3;
+		ctx.strokeStyle = '#ffffff';
+		ctx.stroke();
+		ctx.fillStyle = '#ffffff';
+		ctx.fillText(String(i + 1), p[0], p[1] + 0.5);
+		const label = wp.label.length > 26 ? wp.label.slice(0, 25) + '…' : wp.label;
+		const w = ctx.measureText(label).width + 16;
+		ctx.fillStyle = 'rgba(255, 255, 255, 0.96)';
+		ctx.beginPath();
+		ctx.roundRect(p[0] - w / 2, p[1] - 48, w, 22, 11);
+		ctx.fill();
+		ctx.fillStyle = '#14161A';
+		ctx.fillText(label, p[0], p[1] - 37);
+	});
+	ctx.textBaseline = 'alphabetic';
 
 	const start = screen[0];
 	if (start) {
