@@ -66,6 +66,82 @@ async function getWeather(lat, lon) {
 	});
 }
 
+// Overpass name search around `near` — fallback for when Nominatim rate-limits shared cloud IPs (HTTP 429).
+// Matches name / name:en / name:ja / official_name / alt_name case-insensitively within 25 km, ranking
+// exact matches first, then stations, then POIs (tourism/amenity/leisure/place), then distance.
+const NAME_KEYS = ['name', 'name:en', 'name:ja', 'official_name', 'alt_name'];
+const STATION_SUFFIX = /\s*(station|sta\.?|駅)$/i;
+// Neutralise regex metacharacters without backslashes (Overpass QL string escaping is fiddly).
+const ovpRe = s => s.replace(/[.*+?(){}|$]/g, c => `[${c}]`).replace(/[\^[\]\\"]/g, '.');
+const ovpStr = s => s.replace(/[\\"]/g, '\\$&');
+const titleCase = s => s.replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase());
+
+async function overpassPost(data) {
+	// Public mirrors are individually flaky (kumi and mail.ru both hung at times while testing), so race them
+	// and take the first good answer: worst case is one 15 s timeout instead of 15 s per endpoint.
+	const endpoints = ['https://overpass-api.de/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+	const ctrl = endpoints.map(() => new AbortController());
+	try {
+		return await Promise.any(endpoints.map((endpoint, i) =>
+			getJSON(endpoint, {method: 'POST', body: new URLSearchParams({data}), signal: AbortSignal.any([ctrl[i].signal, AbortSignal.timeout(15e3)])})
+				.then(r => { ctrl.forEach((c, j) => j !== i && c.abort()); return r; })
+				.catch(e => { console.warn('overpass name search failed', endpoint, e.message); throw e; })));
+	} catch {
+		return null;
+	}
+}
+
+async function searchOverpassName(query, near) {
+	const c = near || {lat: 35.6812, lon: 139.7671}; // default: Tokyo Station
+	const q = String(query).trim().replace(/\s+/g, ' ');
+	const stripped = STATION_SUFFIX.test(q) ? q.replace(STATION_SUFFIX, '').trim() : '';
+	const around = `(around:25000,${c.lat},${c.lon})`;
+	// Pass 1 (fast, tag-index lookups): exact names in the common casings. Case-insensitive regex over
+	// every name value is too slow on Overpass (~10 s per key), so it's only the fallback pass below.
+	const variants = s => [...new Set([s, titleCase(s), titleCase(s.toLowerCase())])];
+	const exact = variants(q).flatMap(v => NAME_KEYS.map(k => `nwr["${k}"="${ovpStr(v)}"]${around};`))
+		.concat(stripped ? variants(stripped).flatMap(v => NAME_KEYS.map(k => `nwr["railway"="station"]["${k}"="${ovpStr(v)}"]${around};`)) : []);
+	let res = await overpassPost(`[out:json][timeout:15];(${exact.join('')});out center 20;`);
+	if (res && !res.elements?.length) {
+		// Pass 2 (only if pass 1 reached a server but found nothing): case-insensitive word-order regex (e.g. "Shibuya Crossing" ~ "Shibuya Scramble Crossing") on one key.
+		const key = /[^\x00-\x7f]/.test(q) ? 'name' : 'name:en';
+		res = await overpassPost(`[out:json][timeout:15];nwr["${key}"~"${q.split(' ').map(ovpRe).join('.*')}",i]${around};out center 20;`);
+	}
+	if (!res?.elements?.length) return [];
+	const qn = q.toLowerCase(), sn = stripped.toLowerCase();
+	const toRad = x => x * Math.PI / 180;
+	const seen = new Set();
+	const ranked = res.elements.filter(e => {
+		const id = `${e.type}/${e.id}`;
+		if (seen.has(id) || (e.lat ?? e.center?.lat) == null) return false;
+		seen.add(id);
+		return true;
+	}).map(e => {
+		const t = e.tags || {}, lat = e.lat ?? e.center.lat, lon = e.lon ?? e.center.lon;
+		const names = NAME_KEYS.map(k => t[k]).filter(Boolean).flatMap(v => v.split(';')).map(v => v.trim().toLowerCase());
+		const station = t.railway === 'station' || t.public_transport === 'station';
+		const isExact = names.includes(qn) || (station && sn && names.includes(sn));
+		// Landmarks (tourism/leisure/place) edge out amenities so "Tokyo Tower" beats a bike dock named after it.
+		const tier = (isExact ? 0 : 4) + (station ? 0 : (t.tourism || t.leisure || t.place || t.historic) ? 1 : t.amenity ? 2 : 3);
+		const dist = 6371e3 * 2 * Math.asin(Math.sqrt(Math.sin(toRad(lat - c.lat) / 2) ** 2 + Math.cos(toRad(c.lat)) * Math.cos(toRad(lat)) * Math.sin(toRad(lon - c.lon) / 2) ** 2));
+		const kindKey = ['railway', 'public_transport', 'tourism', 'amenity', 'leisure', 'place', 'shop', 'building', 'highway'].find(k => t[k]);
+		const name = t['name:en'] || t.name || q;
+		const addr = t['addr:full'] || ['addr:province', 'addr:city', 'addr:quarter', 'addr:neighbourhood', 'addr:block_number', 'addr:housenumber'].map(k => t[k]).filter(Boolean).join(' ');
+		return {
+			tier, dist,
+			r: {name, address: [t.name && t.name !== name ? t.name : null, addr || null, 'Tokyo (OpenStreetMap)'].filter(Boolean).join(', '), lat, lon, kind: kindKey ? `${kindKey}/${t[kindKey]}` : `osm/${e.type}`}
+		};
+	}).sort((a, b) => a.tier - b.tier || a.dist - b.dist);
+	// Drop near-duplicates (e.g. one station mapped per operator) so the 5 slots stay useful.
+	const out = [];
+	for (const {r} of ranked) {
+		if (out.some(o => o.name === r.name && Math.abs(o.lat - r.lat) < 0.003 && Math.abs(o.lon - r.lon) < 0.003)) continue;
+		out.push(r);
+		if (out.length === 5) break;
+	}
+	return out;
+}
+
 async function searchPlace(query, near) {
 	const params = new URLSearchParams({q: query, format: 'jsonv2', limit: '5', 'accept-language': 'en,ja'});
 	if (near) {
@@ -73,8 +149,40 @@ async function searchPlace(query, near) {
 		params.set('viewbox', `${near.lon - d},${near.lat + d},${near.lon + d},${near.lat - d}`);
 	}
 	return cached(`geo:${params}`, 60 * 60e3, async () => {
-		const res = await getJSON(`https://nominatim.openstreetmap.org/search?${params}`);
-		return res.map(p => ({name: p.name || p.display_name.split(',')[0], address: p.display_name, lat: +p.lat, lon: +p.lon, kind: `${p.category}/${p.type}`}));
+		// Order: Nominatim -> Overpass name search -> Photon.
+		// DISABLE_NOMINATIM=1 skips Nominatim (simulates the HTTP 429 seen from shared cloud IPs, for testing).
+		try {
+			if (process.env.DISABLE_NOMINATIM === '1') throw new Error('disabled via DISABLE_NOMINATIM');
+			const res = await getJSON(`https://nominatim.openstreetmap.org/search?${params}`, {signal: AbortSignal.timeout(8e3)});
+			if (res.length) {
+				return res.map(p => ({name: p.name || p.display_name.split(',')[0], address: p.display_name, lat: +p.lat, lon: +p.lon, kind: `${p.category}/${p.type}`}));
+			}
+		} catch (e) {
+			console.warn('nominatim failed, trying overpass', e.message);
+		}
+		try {
+			const ov = await searchOverpassName(query, near);
+			if (ov.length) return ov;
+		} catch (e) {
+			console.warn('overpass name search failed, using photon', e.message);
+		}
+		// Last resort: Photon (komoot) — works from cloud IPs but is weak on English names in Japan.
+		const pp = new URLSearchParams({q: query, limit: '5'});
+		if (near) {
+			pp.set('lat', String(near.lat));
+			pp.set('lon', String(near.lon));
+		}
+		const ph = await getJSON(`https://photon.komoot.io/api/?${pp}`);
+		return (ph.features || []).map(f => {
+			const pr = f.properties || {};
+			return {
+				name: pr.name || query,
+				address: [pr.name, pr.street, pr.district, pr.city, pr.country].filter(Boolean).join(', '),
+				lat: f.geometry.coordinates[1],
+				lon: f.geometry.coordinates[0],
+				kind: `${pr.osm_key}/${pr.osm_value}`
+			};
+		});
 	});
 }
 

@@ -421,7 +421,8 @@ const GuideLayer: React.FC = () => {
 
 	const startRoute = useCallback((raw: Route, label: string, from: LatLon, to: LatLon): void => {
 		// Ride / walk on the left side of the road (Japan), crossing where the route turns right.
-		const r = offsetRoute(raw, raw.mode === 'bike' ? 4.5 : 7, from, to);
+		// Walking routes already follow mapped pavements/footways, so only nudge them; bikes keep left in the road.
+		const r = offsetRoute(raw, raw.mode === 'bike' ? 3 : 1.5, from, to);
 		const path = new RoutePath(r);
 		navRef.current = {path, label, from, to, traveled: 0, heading: path.headingAt(0), phase: 'overview', multiplier, pendingCamera: null, shade: null};
 		setNavMode(r.mode);
