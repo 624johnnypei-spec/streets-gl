@@ -74,7 +74,6 @@
 // The map is a full-screen app: never let the document scroll (hidden panels sit below the fold).
 :global(html) {
 	overflow: hidden;
-	height: 100%;
 	overscroll-behavior: none;
 }
 

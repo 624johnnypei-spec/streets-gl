@@ -26,6 +26,10 @@ export default class TileExtrudedMesh extends RenderableObject3D {
 		);
 	}
 
+	public getPositionBuffer(): Float32Array {
+		return this.buffers.positionBuffer;
+	}
+
 	public addDisplayBufferPatch(patch: MeshDisplayBufferPatch): void {
 		this.meshDisplayBufferPatches.push(patch);
 	}

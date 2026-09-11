@@ -176,8 +176,10 @@ export default class RenderSystem extends System {
 
 		pass.objectIdX = pickingSystem.pointerPosition.x;
 		pass.objectIdY = pickingSystem.pointerPosition.y;
+		pass.objectIdRadius = pickingSystem.getPickRadius(this.resolutionScene.x / window.innerWidth);
+		pass.objectIdVersion = pickingSystem.pointerVersion;
 
-		pickingSystem.readObjectId(pass.objectIdBuffer);
+		pickingSystem.readObjectId(pass.objectIdBuffer, pass.objectIdRect);
 	}
 
 	public get resolutionUI(): Vec2 {

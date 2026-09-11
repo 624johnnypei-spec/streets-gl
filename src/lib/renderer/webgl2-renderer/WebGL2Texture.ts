@@ -25,6 +25,7 @@ export default abstract class WebGL2Texture implements AbstractTexture {
 	protected gl: WebGL2RenderingContext;
 	public WebGLTexture: WebGLTexture;
 	private pixelPackBuffer: WebGLBuffer = null;
+	private pixelPackBufferSize: number = 0;
 	protected deleted = false;
 
 	protected constructor(
@@ -134,25 +135,35 @@ export default abstract class WebGL2Texture implements AbstractTexture {
 		this.gl.texParameterf(this.textureTypeConstant, extension, this.anisotropy);
 	}
 
-	public getPixelPackBuffer(): WebGLBuffer {
-		if (this.pixelPackBuffer) {
+	public getPixelPackBuffer(byteSize: number = WebGL2Texture.getFormatByteSize(this.format)): WebGLBuffer {
+		// Reuse one buffer per texture (it used to be recreated, and leaked, on every read) and grow it on demand.
+		if (this.pixelPackBuffer && this.pixelPackBufferSize >= byteSize) {
 			return this.pixelPackBuffer;
 		}
 
-		const buffer = this.renderer.gl.createBuffer();
+		if (!this.pixelPackBuffer) {
+			this.pixelPackBuffer = this.renderer.gl.createBuffer();
+		}
 
-		this.renderer.gl.bindBuffer(this.renderer.gl.PIXEL_PACK_BUFFER, buffer);
+		this.renderer.gl.bindBuffer(this.renderer.gl.PIXEL_PACK_BUFFER, this.pixelPackBuffer);
 		this.renderer.gl.bufferData(
 			this.renderer.gl.PIXEL_PACK_BUFFER,
-			WebGL2Texture.getFormatByteSize(this.format),
+			byteSize,
 			WebGL2Constants.DYNAMIC_READ
 		);
 		this.renderer.gl.bindBuffer(this.renderer.gl.PIXEL_PACK_BUFFER, null);
+		this.pixelPackBufferSize = byteSize;
 
-		return buffer;
+		return this.pixelPackBuffer;
 	}
 
 	public delete(): void {
+		if (this.pixelPackBuffer) {
+			this.gl.deleteBuffer(this.pixelPackBuffer);
+			this.pixelPackBuffer = null;
+			this.pixelPackBufferSize = 0;
+		}
+
 		this.gl.deleteTexture(this.WebGLTexture);
 		this.WebGLTexture = null;
 		this.deleted = true;

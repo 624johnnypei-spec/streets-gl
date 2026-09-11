@@ -24,6 +24,8 @@ WORKDIR /usr/src/app
 COPY --from=builder /usr/src/builder/build ./build
 COPY --from=builder /usr/src/builder/package.json ./
 COPY --from=builder /usr/src/builder/server.js ./
+COPY --from=builder /usr/src/builder/plateau.js ./
+COPY --from=builder /usr/src/builder/data/plateau_buildings.json.gz ./data/
 
 RUN apk add pngquant
 

@@ -93,7 +93,7 @@ export default class WebGL2RenderPass implements AbstractRenderPass {
 		height = 1
 	): Promise<void> {
 		const texture = this.colorAttachments[attachmentId].texture as WebGL2Texture;
-		const pixelBuffer = texture.getPixelPackBuffer();
+		const pixelBuffer = texture.getPixelPackBuffer(buffer.byteLength);
 
 		this.renderer.bindFramebuffer(this.framebuffer);
 		this.renderer.gl.readBuffer(WebGL2Constants.COLOR_ATTACHMENT0 + attachmentId);

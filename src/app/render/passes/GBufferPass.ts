@@ -40,6 +40,14 @@ import MapTimeSystem from "~/app/systems/MapTimeSystem";
 import {AircraftPartTextures} from "~/app/render/textures/createAircraftTexture";
 import PerspectiveCamera from "~/lib/core/PerspectiveCamera";
 
+export interface ObjectIdRect {
+	width: number;
+	height: number;
+	centerX: number;
+	centerY: number;
+	version: number;
+}
+
 export default class GBufferPass extends Pass<{
 	GBufferRenderPass: {
 		type: InternalResourceType.Output;
@@ -80,9 +88,17 @@ export default class GBufferPass extends Pass<{
 	private advancedInstanceMaterial: AbstractMaterial;
 	private aircraftMaterial: AbstractMaterial;
 	private cameraMatrixWorldInversePrev: Mat4 = null;
-	public objectIdBuffer: Uint32Array = new Uint32Array(1);
+	public static readonly MaxObjectIdRadius: number = 48;
+	// Object IDs around the pointer, read as one (2r+1)² square. Rows are bottom-up (GL order), row-major.
+	public objectIdBuffer: Uint32Array = new Uint32Array((2 * GBufferPass.MaxObjectIdRadius + 1) ** 2);
 	public objectIdX = 0;
 	public objectIdY = 0;
+	public objectIdRadius = 0;
+	public objectIdVersion = 0;
+	// Layout of the last completed read: size of the (screen-clamped) square, the pointer's cell within it,
+	// and the pointer version it was issued for.
+	public objectIdRect: ObjectIdRect = {width: 0, height: 0, centerX: 0, centerY: 0, version: -1};
+	private objectIdReadPending: boolean = false;
 	private fullScreenTriangle: FullScreenTriangle;
 
 	public constructor(manager: PassManager) {
@@ -504,8 +520,45 @@ export default class GBufferPass extends Pass<{
 	}
 
 	private writeToObjectIdBuffer(): void {
+		// One read in flight at a time: the pixel pack buffer is shared, and this avoids stalling on it.
+		if (this.objectIdReadPending) {
+			return;
+		}
+
 		const mainRenderPass = this.getPhysicalResource('GBufferRenderPass');
-		mainRenderPass.readColorAttachmentPixel(4, this.objectIdBuffer, this.objectIdX, this.objectIdY);
+		const texture = mainRenderPass.colorAttachments[4].texture;
+		const r = Math.max(0, Math.min(GBufferPass.MaxObjectIdRadius, Math.round(this.objectIdRadius)));
+		const px = Math.round(this.objectIdX);
+		const py = Math.round(this.objectIdY);
+
+		if (px < 0 || py < 0 || px >= texture.width || py >= texture.height) {
+			this.objectIdBuffer.fill(0);
+			this.objectIdRect = {width: 0, height: 0, centerX: 0, centerY: 0, version: this.objectIdVersion};
+			return;
+		}
+
+		// Square around the pointer in screen space (y down), clamped to the attachment.
+		const left = Math.max(0, px - r);
+		const top = Math.max(0, py - r);
+		const right = Math.min(texture.width - 1, px + r);
+		const bottom = Math.min(texture.height - 1, py + r);
+		const rect = {
+			width: right - left + 1,
+			height: bottom - top + 1,
+			centerX: px - left,
+			centerY: bottom - py, // rows come back bottom-up
+			version: this.objectIdVersion
+		};
+		const target = this.objectIdBuffer.subarray(0, rect.width * rect.height);
+
+		this.objectIdReadPending = true;
+
+		// readColorAttachmentPixel takes the top row in screen space and flips it; pass the bottom-most row so the square spans [top, bottom].
+		mainRenderPass.readColorAttachmentPixel(4, target, left, bottom, rect.width, rect.height).then(() => {
+			this.objectIdRect = rect;
+		}).finally(() => {
+			this.objectIdReadPending = false;
+		});
 	}
 
 	private getInstancesOrigin(camera: Camera): Vec2 {

@@ -1,10 +1,12 @@
 // Serves the built map and two APIs:
 //   GET  /api/weather?lat=&lon=   condensed wttr.in forecast (cached 10 min)
-//   POST /api/agent               ai& tool-calling agent that searches places, reads weather,
+//   GET  /api/osm/:type/:id       {type, id, tags, center: {lat, lon}} for a way/relation/node (cached 24 h)
+//   POST /api/agent              ai& tool-calling agent that searches places, reads weather,
 //                                 and returns camera/time actions for the 3D map to apply.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const {lookupBuilding} = require('./plateau.js');
 
 const PORT = process.env.PORT || 8080;
 const BUILD_DIR = path.join(__dirname, 'build');
@@ -125,6 +127,35 @@ async function getRoute(from, to, mode) {
 		});
 		return {mode: mode === 'bike' ? 'bike' : 'walk', distance_m: Math.round(r.distance), duration_s: Math.round(r.duration), coords: r.geometry.coordinates.map(([lon, lat]) => [lat, lon]), steps};
 	});
+}
+
+// ---------- OSM feature details (selection panel) ----------
+
+const osmInflight = new Map();
+
+// Tags + centre point for an OSM way/relation/node, cached 24 h. Concurrent requests for the same feature share one upstream call.
+function getOSMFeature(type, id) {
+	const key = `osm:${type}/${id}`;
+	if (osmInflight.has(key)) return osmInflight.get(key);
+	const p = cached(key, 24 * 3600e3, async () => {
+		const url = type === 'node'
+			? `https://api.openstreetmap.org/api/0.6/node/${id}.json`
+			: `https://api.openstreetmap.org/api/0.6/${type}/${id}/full.json`;
+		const d = await getJSON(url);
+		const elements = d.elements || [];
+		const self = elements.find(e => e.type === type && e.id === id);
+		if (!self) throw new Error(`${type} ${id} not found`);
+		let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+		for (const e of elements) {
+			if (e.type !== 'node' || e.lat == null) continue;
+			minLat = Math.min(minLat, e.lat); maxLat = Math.max(maxLat, e.lat);
+			minLon = Math.min(minLon, e.lon); maxLon = Math.max(maxLon, e.lon);
+		}
+		const center = Number.isFinite(minLat) ? {lat: +((minLat + maxLat) / 2).toFixed(7), lon: +((minLon + maxLon) / 2).toFixed(7)} : null;
+		return {type, id, tags: self.tags || {}, center};
+	}).finally(() => osmInflight.delete(key));
+	osmInflight.set(key, p);
+	return p;
 }
 
 // ---------- sun + shade ----------
@@ -294,7 +325,7 @@ Current Tokyo time: ${now}. Camera is looking at lat ${ctx.lat?.toFixed?.(5)}, l
 Always use tools for facts — never invent places, coordinates or weather. Typical flow: search_place / find_nearby -> get_weather when timing or outdoors matters -> fly_to the best answer (and set_time when the user asks about a moment like sunset or tonight) -> show_places for options.
 When the user wants to go somewhere (walk, cycle, take me, directions), call start_navigation instead of fly_to; suggest cycling for >2 km and warn if rain is likely during the trip.
 Choose cinematic cameras: pitch 35-60, distance 250-900 for streets, 1500-4000 for districts.
-Reply in the user's language (Japanese or English), max 4 short sentences, concrete and friendly. Mention the weather when it affects the plan.`;
+Reply in the user's language (Japanese or English), max 4 short sentences, concrete and friendly, plain text only (no markdown, no asterisks). Mention the weather when it affects the plan.`;
 }
 
 async function callAI(messages) {
@@ -315,7 +346,10 @@ async function runAgent({messages = [], camera = {}}) {
 
 	for (let step = 0; step < 6; step++) {
 		const msg = await callAI(convo);
-		convo.push(msg);
+		// Send back only what the API accepts (reasoning_content and null fields are rejected by some models).
+		convo.push(msg.tool_calls?.length
+			? {role: 'assistant', content: msg.content || '', tool_calls: msg.tool_calls}
+			: {role: 'assistant', content: msg.content || ''});
 		if (!msg.tool_calls?.length) {
 			return {reply: msg.content || '', actions, trace, model: AI_MODEL};
 		}
@@ -344,7 +378,7 @@ async function runAgent({messages = [], camera = {}}) {
 			} catch (e) {
 				result = {error: e.message};
 			}
-			trace.push({tool: call.function.name, args});
+			trace.push(result && result.error ? {tool: call.function.name, args, error: result.error} : {tool: call.function.name, args});
 			convo.push({role: 'tool', tool_call_id: call.id, content: JSON.stringify(result).slice(0, 6000)});
 		}
 	}
@@ -402,10 +436,40 @@ http.createServer(async (req, res) => {
 			if (!Array.isArray(body.coords) || body.coords.length < 2) return send(res, 400, {error: 'coords required'});
 			return send(res, 200, await computeShade(body));
 		}
+		if (url.pathname === '/api/building') {
+			const lat = parseFloat(url.searchParams.get('lat')), lon = parseFloat(url.searchParams.get('lon'));
+			if (Number.isNaN(lat) || Number.isNaN(lon)) return send(res, 400, {error: 'lat and lon required'});
+			return send(res, 200, lookupBuilding(lat, lon)); // PLATEAU attributes; null outside coverage
+		}
+		if (url.pathname === '/api/building-name') {
+			// Name of the named OSM outline that contains the point (landmarks first). Few PLATEAU records carry names.
+			const lat = parseFloat(url.searchParams.get('lat')), lon = parseFloat(url.searchParams.get('lon'));
+			if (Number.isNaN(lat) || Number.isNaN(lon)) return send(res, 400, {error: 'lat and lon required'});
+			const q = `[out:json][timeout:10];is_in(${lat.toFixed(6)},${lon.toFixed(6)})->.a;(area.a[building][name];area.a[man_made][name];area.a[tourism][name];area.a[amenity][name];area.a[railway][name];area.a[shop][name];area.a[office][name];area.a[leisure][name];);out tags;`;
+			const best = await cached(`isin:${q}`, 24 * 3600e3, async () => {
+				const r = await getJSON('https://overpass-api.de/api/interpreter', {method: 'POST', body: new URLSearchParams({data: q})});
+				const score = t => (t.tourism ? 4 : 0) + (t.man_made ? 3 : 0) + (t.railway === 'station' ? 4 : 0) + (t.amenity ? 2 : 0) + (t['name:en'] ? 2 : 0) + (t.wikidata ? 3 : 0) + (t.building ? 1 : 0);
+				const els = (r.elements || []).map(e => e.tags || {}).filter(t => t.name).sort((a, b) => score(b) - score(a));
+				return els.length ? {name: els[0].name, name_en: els[0]['name:en'] || null} : null;
+			});
+			return send(res, 200, best);
+		}
 		if (url.pathname === '/api/sun') {
 			const lat = parseFloat(url.searchParams.get('lat')), lon = parseFloat(url.searchParams.get('lon'));
 			const p = sunPosition(url.searchParams.get('iso') ? new Date(url.searchParams.get('iso')) : new Date(), lat, lon);
 			return send(res, 200, {altitude: p.altitude * 180 / Math.PI, bearing: p.bearing});
+		}
+		const osmMatch = url.pathname.match(/^\/api\/osm\/(way|relation|node)\/(\d{1,15})$/);
+		if (osmMatch) {
+			let feature;
+			try {
+				feature = await getOSMFeature(osmMatch[1], Number(osmMatch[2]));
+			} catch (e) {
+				if (/HTTP (404|410)|not found/.test(e.message)) return send(res, 404, {error: e.message});
+				throw e;
+			}
+			res.writeHead(200, {'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=86400'});
+			return res.end(JSON.stringify(feature));
 		}
 		if (url.pathname === '/api/agent' && req.method === 'POST') {
 			return send(res, 200, await runAgent(await readBody(req)));
