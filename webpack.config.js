@@ -8,8 +8,16 @@ const {EsbuildPlugin} = require('esbuild-loader');
 
 const childProcess = require('child_process');
 const {DefinePlugin} = require("webpack");
-const COMMIT_SHA = process.env.SOURCE_COMMIT || process.env.GITHUB_SHA || childProcess.execSync('git rev-parse HEAD').toString().trim();
-const COMMIT_BRANCH = process.env.COOLIFY_BRANCH || process.env.GITHUB_REF_NAME || childProcess.execSync("git rev-parse --abbrev-ref HEAD").toString().trim();
+// Build.io (and other tarball-based builders) have no .git directory, so fall back gracefully.
+const gitOr = (cmd, fallback) => {
+	try {
+		return childProcess.execSync(cmd, {stdio: ['ignore', 'pipe', 'ignore']}).toString().trim();
+	} catch (e) {
+		return fallback;
+	}
+};
+const COMMIT_SHA = process.env.SOURCE_COMMIT || process.env.GITHUB_SHA || gitOr('git rev-parse HEAD', 'unknown');
+const COMMIT_BRANCH = process.env.COOLIFY_BRANCH || process.env.GITHUB_REF_NAME || gitOr('git rev-parse --abbrev-ref HEAD', 'main');
 const VERSION = require('./package.json').version;
 
 module.exports = (env, argv) => ([{
