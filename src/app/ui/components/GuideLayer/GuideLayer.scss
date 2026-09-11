@@ -44,6 +44,14 @@ $blue: #2f7bff;
 	height: 100vh;
 	pointer-events: none;
 	z-index: 1;
+
+	&--model {
+		z-index: 2;
+	}
+
+	&--fx {
+		z-index: 3;
+	}
 }
 
 .wet {
@@ -118,7 +126,7 @@ $blue: #2f7bff;
 	top: 76px;
 	width: 290px;
 	padding: 14px 14px 12px;
-	z-index: 3;
+	z-index: 4;
 
 	&__main {
 		display: flex;
@@ -195,7 +203,7 @@ $blue: #2f7bff;
 	padding: 12px 22px 12px 14px;
 	min-width: 320px;
 	max-width: 560px;
-	z-index: 3;
+	z-index: 4;
 	background: rgba(22, 90, 220, 0.92);
 
 	&__arrow {
@@ -230,7 +238,7 @@ $blue: #2f7bff;
 	align-items: center;
 	gap: 14px;
 	padding: 10px 14px;
-	z-index: 3;
+	z-index: 4;
 	white-space: nowrap;
 
 	&__stats {
@@ -280,7 +288,7 @@ $blue: #2f7bff;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
-	z-index: 3;
+	z-index: 4;
 
 	&--closed {
 		width: 200px;

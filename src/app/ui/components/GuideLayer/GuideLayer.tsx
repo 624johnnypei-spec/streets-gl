@@ -3,6 +3,7 @@ import {ActionsContext} from "~/app/ui/UI";
 import UIActions from "~/app/ui/UIActions";
 import styles from './GuideLayer.scss';
 import WeatherFX, {lookFromWeather, PRESETS, WeatherKind, WeatherLook} from "./WeatherFX";
+import Traveller3D from "./Traveller3D";
 import {formatDistance, formatDuration, haversine, LatLon, lerpAngle, Route, RoutePath} from "./geo";
 
 // Map yaw is degrees with 0 = north-up; YAW_SIGN converts a compass bearing into it.
@@ -109,6 +110,10 @@ const GuideLayer: React.FC = () => {
 	const actions = useContext(ActionsContext);
 
 	const canvasRef = useRef<HTMLCanvasElement>(null);
+	const modelCanvasRef = useRef<HTMLCanvasElement>(null);
+	const fxCanvasRef = useRef<HTMLCanvasElement>(null);
+	const travellerRef = useRef<Traveller3D | null>(null);
+	const movingRef = useRef<number>(0);
 	const avatarRef = useRef<HTMLDivElement>(null);
 	const chevronRef = useRef<HTMLDivElement>(null);
 	const fxRef = useRef(new WeatherFX());
@@ -239,6 +244,16 @@ const GuideLayer: React.FC = () => {
 	// ---------- render loop: weather FX, route line, pins, traveller, follow camera ----------
 
 	useEffect(() => {
+		if (!modelCanvasRef.current) return undefined;
+		try {
+			travellerRef.current = new Traveller3D(modelCanvasRef.current);
+		} catch (e) {
+			console.warn('3D traveller unavailable, falling back to 2D marker', e);
+		}
+		return (): void => travellerRef.current?.dispose();
+	}, []);
+
+	useEffect(() => {
 		let raf = 0;
 		let last = performance.now();
 		let hudTimer = 0;
@@ -258,19 +273,21 @@ const GuideLayer: React.FC = () => {
 		const drawFrame = (dt: number): void => {
 			const canvas = canvasRef.current;
 			const ctx = canvas?.getContext('2d');
+			const fxCtx = fxCanvasRef.current?.getContext('2d');
 
-			if (canvas && ctx) {
+			if (canvas && ctx && fxCtx) {
 				const dpr = Math.min(window.devicePixelRatio || 1, 2);
 				const w = window.innerWidth;
 				const h = window.innerHeight;
 
-				if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
-					canvas.width = Math.round(w * dpr);
-					canvas.height = Math.round(h * dpr);
+				for (const c of [ctx, fxCtx]) {
+					if (c.canvas.width !== Math.round(w * dpr) || c.canvas.height !== Math.round(h * dpr)) {
+						c.canvas.width = Math.round(w * dpr);
+						c.canvas.height = Math.round(h * dpr);
+					}
+					c.setTransform(dpr, 0, 0, dpr, 0, 0);
+					c.clearRect(0, 0, w, h);
 				}
-
-				ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-				ctx.clearRect(0, 0, w, h);
 
 				const nav = navRef.current;
 
@@ -313,8 +330,17 @@ const GuideLayer: React.FC = () => {
 					const ahead = nav.path.pointAt(nav.traveled + 12);
 					const screenAhead = actions.projectLatLon(ahead[0], ahead[1]);
 
+					const movingTarget = nav.phase === 'follow' ? 1 : 0;
+					movingRef.current += (movingTarget - movingRef.current) * Math.min(1, dt * 4);
+					const info = actions.getCameraInfo();
+					const traveller = travellerRef.current;
+
+					if (traveller && info) {
+						traveller.render(info, pos[0], pos[1], nav.heading, nav.traveled, movingRef.current, nav.path.route.mode);
+					}
+
 					if (avatarRef.current) {
-						if (screen) {
+						if (screen && !traveller) {
 							avatarRef.current.style.display = 'block';
 							avatarRef.current.style.transform = `translate(${screen[0]}px, ${screen[1]}px)`;
 						} else {
@@ -340,12 +366,13 @@ const GuideLayer: React.FC = () => {
 							etaSeconds: nav.path.route.duration_s * remaining / Math.max(nav.path.length, 1)
 						});
 					}
-				} else if (avatarRef.current) {
-					avatarRef.current.style.display = 'none';
+				} else {
+					if (avatarRef.current) avatarRef.current.style.display = 'none';
+					travellerRef.current?.clear();
 				}
 
 				drawPins(ctx, actions, placesRef.current);
-				fxRef.current.draw(ctx, dt, w, h, lookRef.current);
+				fxRef.current.draw(fxCtx, dt, w, h, lookRef.current);
 			}
 		};
 
@@ -417,6 +444,8 @@ const GuideLayer: React.FC = () => {
 
 	return <>
 		<canvas ref={canvasRef} className={styles.overlay}/>
+		<canvas ref={modelCanvasRef} className={`${styles.overlay} ${styles['overlay--model']}`}/>
+		<canvas ref={fxCanvasRef} className={`${styles.overlay} ${styles['overlay--fx']}`}/>
 
 		<div ref={avatarRef} className={styles.avatar} style={{display: 'none'}}>
 			<div ref={chevronRef} className={styles.avatar__chevron}/>

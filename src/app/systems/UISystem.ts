@@ -13,7 +13,7 @@ import Utils from "~/app/Utils";
 import TileLoadingSystem, {OverpassEndpoint} from "~/app/systems/TileLoadingSystem";
 import UISystemState from "~/app/ui/UISystemState";
 import RenderGraphSnapshot from "~/app/ui/RenderGraphSnapshot";
-import UIActions from "~/app/ui/UIActions";
+import UIActions, {CameraInfo} from "~/app/ui/UIActions";
 import SceneSystem from "~/app/systems/SceneSystem";
 import Vec3 from "~/lib/math/Vec3";
 
@@ -134,6 +134,28 @@ export default class UISystem extends System {
 				const ndc = Vec3.applyMatrix4(cameraSpace, camera.projectionMatrix);
 
 				return [(ndc.x + 1) / 2 * window.innerWidth, (1 - ndc.y) / 2 * window.innerHeight];
+			},
+			getCameraInfo: (): CameraInfo | null => {
+				const controls = this.systemManager.getSystem(ControlsSystem);
+
+				if (!controls.isReady) {
+					return null;
+				}
+
+				const {camera, wrapper} = this.systemManager.getSystem(SceneSystem).objects;
+				const time = this.systemManager.getSystem(MapTimeSystem);
+				const light = time.lightDirection;
+
+				return {
+					projection: camera.projectionMatrix.values,
+					world: camera.matrixWorld.values,
+					originX: wrapper.position.x,
+					originZ: wrapper.position.z,
+					groundY: controls.getGroundControlsTarget().y,
+					sunDirection: [light.x, light.y, light.z],
+					sunIntensity: time.lightIntensity,
+					ambientIntensity: time.ambientIntensity
+				};
 			}
 		}
 

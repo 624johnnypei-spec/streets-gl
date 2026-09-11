@@ -12,4 +12,17 @@ export default interface UIActions {
 	getControlsStateHash: () => string;
 	// Screen position (CSS px) of a ground point, or null when it is behind the camera.
 	projectLatLon: (lat: number, lon: number) => [number, number] | null;
+	// Camera + lighting snapshot for overlay renderers that share the map's view (null until ready).
+	getCameraInfo: () => CameraInfo | null;
+}
+
+export interface CameraInfo {
+	projection: ArrayLike<number>;
+	world: ArrayLike<number>;
+	originX: number;
+	originZ: number;
+	groundY: number;
+	sunDirection: [number, number, number];
+	sunIntensity: number;
+	ambientIntensity: number;
 }
