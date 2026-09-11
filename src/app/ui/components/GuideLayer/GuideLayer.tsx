@@ -9,7 +9,7 @@ import {formatDistance, formatDuration, haversine, LatLon, lerpAngle, Route, Rou
 const YAW_SIGN = 1;
 const FOLLOW_PITCH = 45;
 const FOLLOW_DISTANCE = 240;
-const FOLLOW_LEAD = 60; // look this far ahead so the traveller sits in the lower third, Tesla-style
+const FOLLOW_LEAD = 28; // look slightly ahead so the traveller sits in the lower third, Tesla-style
 const SPEED_MS = {walk: 1.4, bike: 4.6};
 const MULTIPLIERS = [1, 5, 15, 40];
 
