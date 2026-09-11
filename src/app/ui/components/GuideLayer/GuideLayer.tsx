@@ -6,7 +6,7 @@ import UIActions from "~/app/ui/UIActions";
 import styles from './GuideLayer.scss';
 import WeatherFX, {lookFromWeather, PRESETS, WeatherKind, WeatherLook} from "./WeatherFX";
 import Traveller3D, {PrecipState} from "./Traveller3D";
-import {formatDistance, LatLon, lerpAngle, Route, RoutePath, haversine} from "./geo";
+import {formatDistance, LatLon, lerpAngle, offsetRoute, Route, RoutePath, haversine} from "./geo";
 
 // Map yaw is degrees with 0 = north-up; YAW_SIGN converts a compass bearing into it.
 const YAW_SIGN = 1;
@@ -395,14 +395,30 @@ const GuideLayer: React.FC = () => {
 		const nav = navRef.current;
 		if (!nav) return;
 		// Past ~4 km streets-gl switches to its flat slippy map, which suits a whole-route overview.
-		const {center, extentMetres} = nav.path.bounds();
-		const distance = Math.min(Math.max(extentMetres * 2.2, 600), 12000);
+		// Fit the whole route into the part of the screen not covered by panels (top-down, north up).
+		const {center, extentNS, extentEW} = nav.path.bounds();
+		const phone = window.innerWidth < 720;
+		const aspect = window.innerWidth / Math.max(window.innerHeight, 1);
+		const usableH = phone ? 0.38 : 0.78;
+		const usableW = phone ? 0.88 : Math.min(0.9, Math.max(0.45, (window.innerWidth - 720) / window.innerWidth));
+		const tanHalf = Math.tan(20 * Math.PI / 180); // default 40° vertical FOV
+		const pad = 1.2;
+		const distance = Math.min(Math.max(
+			(extentNS * pad) / (usableH * 2 * tanHalf),
+			(extentEW * pad) / (usableW * aspect * 2 * tanHalf),
+			500
+		), 20000);
+		// On phones the bottom sheet covers the lower ~60%: aim the camera south so the route sits above it.
+		const visH = 2 * distance * tanHalf;
+		const lat = phone ? center[0] - (0.5 - usableH / 2) * visH / 110574 : center[0];
 		nav.phase = 'overview';
-		nav.pendingCamera = [center[0], center[1], 89.9, 0, distance];
+		nav.pendingCamera = [lat, center[1], 89.9, 0, distance];
 		setNavPhase('overview');
 	}, []);
 
-	const startRoute = useCallback((r: Route, label: string, from: LatLon, to: LatLon): void => {
+	const startRoute = useCallback((raw: Route, label: string, from: LatLon, to: LatLon): void => {
+		// Ride / walk on the left side of the road (Japan), crossing where the route turns right.
+		const r = offsetRoute(raw, raw.mode === 'bike' ? 4.5 : 7, from, to);
 		const path = new RoutePath(r);
 		navRef.current = {path, label, from, to, traveled: 0, heading: path.headingAt(0), phase: 'overview', multiplier, pendingCamera: null, shade: null};
 		setNavMode(r.mode);

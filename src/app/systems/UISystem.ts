@@ -133,6 +133,10 @@ export default class UISystem extends System {
 
 				const ndc = Vec3.applyMatrix4(cameraSpace, camera.projectionMatrix);
 
+				if (ndc.z > 1) {
+					return null; // beyond the far plane
+				}
+
 				return [(ndc.x + 1) / 2 * window.innerWidth, (1 - ndc.y) / 2 * window.innerHeight];
 			},
 			getCameraInfo: (): CameraInfo | null => {
