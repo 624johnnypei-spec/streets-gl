@@ -153,9 +153,15 @@ export default class UISystem extends System {
 					originZ: wrapper.position.z,
 					groundY: controls.getGroundControlsTarget().y,
 					sunDirection: [light.x, light.y, light.z],
+					sunAltitude: time.sunDirection ? Math.asin(MathUtils.clamp(-time.sunDirection.y, -1, 1)) * 180 / Math.PI : 0,
 					sunIntensity: time.lightIntensity,
 					ambientIntensity: time.ambientIntensity
 				};
+			},
+			setSettingStatus: (key: string, status: string): void => {
+				if (settingsSystem.settings.get(key)?.statusValue !== status) {
+					settingsSystem.settings.update(key, {statusValue: status});
+				}
 			}
 		}
 

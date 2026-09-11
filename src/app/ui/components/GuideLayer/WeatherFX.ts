@@ -68,11 +68,12 @@ export default class WeatherFX {
 		};
 	}
 
-	public draw(ctx: CanvasRenderingContext2D, dt: number, w: number, h: number, look: WeatherLook): void {
+	// particles=false leaves rain/snow to the 3D layer and only draws sky tint, fog and lightning.
+	public draw(ctx: CanvasRenderingContext2D, dt: number, w: number, h: number, look: WeatherLook, particles: boolean = true): void {
 		this.time += dt;
 
 		// Sky tint for overcast / wet weather, haze for fog
-		const gloom = look.kind === 'clear' ? 0 : Math.min(0.32, (look.cloud / 100) * 0.18 + (look.kind === 'storm' ? 0.14 : look.kind === 'rain' ? 0.06 : 0));
+		const gloom = look.kind === 'clear' ? 0 : Math.min(0.26, (look.cloud / 100) * 0.12 + (look.kind === 'storm' ? 0.12 : look.kind === 'rain' ? 0.05 : 0));
 
 		if (gloom > 0) {
 			ctx.fillStyle = `rgba(28, 36, 52, ${gloom})`;
@@ -88,7 +89,7 @@ export default class WeatherFX {
 			ctx.fillRect(0, 0, w, h);
 		}
 
-		const want = this.target(look, w, h);
+		const want = particles ? this.target(look, w, h) : 0;
 
 		while (this.particles.length < want) this.particles.push(this.spawn(look, w, h, true));
 		if (this.particles.length > want) this.particles.length = want;

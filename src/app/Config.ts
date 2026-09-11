@@ -78,7 +78,7 @@ const Config = {
 			label: 'Shadows',
 			status: ['off', 'low', 'medium', 'high'],
 			statusLabels: ['Disabled', 'Low', 'Medium', 'High'],
-			statusDefault: 'medium',
+			statusDefault: 'high',
 			category: 'graphics'
 		},
 		taa: {

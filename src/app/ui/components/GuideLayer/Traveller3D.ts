@@ -213,6 +213,143 @@ class Cyclist {
 	}
 }
 
+
+// World-anchored precipitation volume: drops stay fixed in the world and wrap around the
+// view, so moving the camera parallaxes through them (reads as real 3D rain).
+const PRECIP_VERT = `
+	attribute vec3 seed;
+	attribute float tip;
+	uniform float uTime;
+	uniform vec3 uBox;
+	uniform vec3 uCenter;
+	uniform vec2 uAnchor;
+	uniform float uFall;
+	uniform float uLen;
+	uniform vec2 uWind;
+	uniform float uSnow;
+	varying float vTip;
+	varying float vFade;
+	void main() {
+		vec2 w = seed.xz * uBox.xz;
+		vec2 xz = mod(w - uAnchor, uBox.xz) - 0.5 * uBox.xz;
+		float y = mod(seed.y * uBox.y - uTime * uFall * (0.8 + 0.4 * fract(seed.x * 91.7)), uBox.y);
+		vec3 p = vec3(uCenter.x + xz.x, uCenter.y + y, uCenter.z + xz.y);
+		float sway = uSnow * sin(uTime * 1.3 + seed.x * 40.0) * uLen * 2.0;
+		p.xz += uWind * (y / max(uFall, 0.001)) * 0.35 + vec2(sway, 0.0);
+		vec3 dir = normalize(vec3(uWind.x, -uFall, uWind.y));
+		p -= dir * uLen * tip * (1.0 - uSnow);
+		vTip = tip;
+		vFade = smoothstep(0.0, 0.15, y / uBox.y) * (1.0 - smoothstep(0.85, 1.0, y / uBox.y));
+		vec4 mv = modelViewMatrix * vec4(p, 1.0);
+		gl_Position = projectionMatrix * mv;
+		gl_PointSize = uSnow * clamp(uLen * 900.0 / -mv.z, 1.5, 9.0);
+	}
+`;
+
+const PRECIP_FRAG = `
+	uniform vec3 uColor;
+	uniform float uOpacity;
+	uniform float uSnow;
+	varying float vTip;
+	varying float vFade;
+	void main() {
+		float a = uOpacity * vFade;
+		if (uSnow > 0.5) {
+			vec2 c = gl_PointCoord - 0.5;
+			a *= smoothstep(0.5, 0.2, length(c));
+		} else {
+			a *= mix(1.0, 0.15, vTip);
+		}
+		gl_FragColor = vec4(uColor, a);
+	}
+`;
+
+export interface PrecipState {
+	kind: 'none' | 'rain' | 'snow';
+	intensity: number; // 0..1
+	windBearing: number; // compass degrees the wind blows FROM
+	windKmph: number;
+	night: boolean;
+}
+
+class Precipitation {
+	public readonly lines: THREE.LineSegments;
+	public readonly points: THREE.Points;
+	private readonly lineMat: THREE.ShaderMaterial;
+	private readonly pointMat: THREE.ShaderMaterial;
+	private readonly count: number;
+
+	public constructor(count: number = 22000) {
+		this.count = count;
+		const seeds = new Float32Array(count * 2 * 3);
+		const tips = new Float32Array(count * 2);
+		for (let i = 0; i < count; i++) {
+			const sx = Math.random(), sy = Math.random(), sz = Math.random();
+			for (let v = 0; v < 2; v++) {
+				seeds.set([sx, sy, sz], (i * 2 + v) * 3);
+				tips[i * 2 + v] = v;
+			}
+		}
+		const lineGeo = new THREE.BufferGeometry();
+		lineGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 2 * 3), 3));
+		lineGeo.setAttribute('seed', new THREE.BufferAttribute(seeds, 3));
+		lineGeo.setAttribute('tip', new THREE.BufferAttribute(tips, 1));
+
+		const pointGeo = new THREE.BufferGeometry();
+		const pSeeds = new Float32Array(count * 3);
+		for (let i = 0; i < count; i++) pSeeds.set([Math.random(), Math.random(), Math.random()], i * 3);
+		pointGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
+		pointGeo.setAttribute('seed', new THREE.BufferAttribute(pSeeds, 3));
+		pointGeo.setAttribute('tip', new THREE.BufferAttribute(new Float32Array(count), 1));
+
+		const uniforms = (): Record<string, THREE.IUniform> => ({
+			uTime: {value: 0}, uBox: {value: new THREE.Vector3(1, 1, 1)}, uCenter: {value: new THREE.Vector3()},
+			uAnchor: {value: new THREE.Vector2()}, uFall: {value: 20}, uLen: {value: 3}, uWind: {value: new THREE.Vector2()},
+			uColor: {value: new THREE.Color(0xdfe8f5)}, uOpacity: {value: 0.5}, uSnow: {value: 0}
+		});
+		const common = {vertexShader: PRECIP_VERT, fragmentShader: PRECIP_FRAG, transparent: true, depthWrite: false};
+		this.lineMat = new THREE.ShaderMaterial({...common, uniforms: uniforms()});
+		this.pointMat = new THREE.ShaderMaterial({...common, uniforms: uniforms()});
+		this.pointMat.uniforms.uSnow.value = 1;
+
+		this.lines = new THREE.LineSegments(lineGeo, this.lineMat);
+		this.points = new THREE.Points(pointGeo, this.pointMat);
+		this.lines.frustumCulled = false;
+		this.points.frustumCulled = false;
+	}
+
+	public update(state: PrecipState, time: number, center: THREE.Vector3, anchor: THREE.Vector2, viewDistance: number): void {
+		const rain = state.kind === 'rain';
+		const snow = state.kind === 'snow';
+		this.lines.visible = rain && state.intensity > 0;
+		this.points.visible = snow && state.intensity > 0;
+		if (!rain && !snow) return;
+
+		const D = MathUtils.clamp(viewDistance, 60, 2500);
+		const box = new THREE.Vector3(D * 1.6, D * 1.0, D * 1.6);
+		// Wind blows FROM windBearing; streaks lean downwind. +X = north, +Z = east.
+		const toward = (state.windBearing + 180) * Math.PI / 180;
+		const windMs = state.windKmph / 3.6 * (D / 90);
+		const wind = new THREE.Vector2(Math.cos(toward) * windMs, Math.sin(toward) * windMs);
+
+		const mat = rain ? this.lineMat : this.pointMat;
+		const u = mat.uniforms;
+		u.uTime.value = time;
+		u.uBox.value.copy(box);
+		u.uCenter.value.copy(center);
+		u.uAnchor.value.set(anchor.x % box.x, anchor.y % box.z);
+		u.uFall.value = rain ? D / 9 : D / 70;
+		u.uLen.value = rain ? D / 40 : D / 900;
+		u.uWind.value.copy(wind);
+		u.uOpacity.value = (rain ? 0.62 : 0.9) * (state.night ? 0.75 : 1);
+		(u.uColor.value as THREE.Color).set(state.night ? 0x9fb3cc : 0xe4ecf7);
+
+		const drawn = Math.round(this.count * MathUtils.clamp(0.25 + state.intensity * 0.75, 0, 1));
+		if (rain) this.lines.geometry.setDrawRange(0, drawn * 2);
+		else this.points.geometry.setDrawRange(0, drawn);
+	}
+}
+
 export default class Traveller3D {
 	private readonly renderer: THREE.WebGLRenderer;
 	private readonly scene = new THREE.Scene();
@@ -224,12 +361,22 @@ export default class Traveller3D {
 	private readonly cyclist = new Cyclist();
 	private readonly ring: THREE.Mesh;
 	private readonly shadow: THREE.Mesh;
+	private readonly shadowCatcher: THREE.Mesh;
+	private readonly precip = new Precipitation();
 	private walkPhase = 0;
+	private clock = 0;
 
 	public constructor(canvas: HTMLCanvasElement) {
 		this.renderer = new THREE.WebGLRenderer({canvas, alpha: true, antialias: true, premultipliedAlpha: true});
 		this.renderer.setClearColor(0x000000, 0);
 		this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+		this.renderer.shadowMap.enabled = true;
+		this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+		// The traveller casts a real shadow along the map's sun direction.
+		this.sun.castShadow = true;
+		this.sun.shadow.mapSize.set(1024, 1024);
+		this.sun.shadow.bias = -0.0005;
 
 		this.camera.matrixAutoUpdate = false;
 		this.scene.add(this.ambient, this.sun, this.sun.target, this.holder);
@@ -248,16 +395,28 @@ export default class Traveller3D {
 		this.shadow.rotation.x = -Math.PI / 2;
 		this.shadow.position.y = 0.02;
 
-		this.holder.add(this.shadow, this.ring, this.walker.root, this.cyclist.root);
+		this.shadowCatcher = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.ShadowMaterial({opacity: 0.38, depthWrite: false}));
+		this.shadowCatcher.rotation.x = -Math.PI / 2;
+		this.shadowCatcher.position.y = 0.01;
+		this.shadowCatcher.receiveShadow = true;
+
+		this.holder.add(this.shadowCatcher, this.shadow, this.ring, this.walker.root, this.cyclist.root);
+		this.walker.root.traverse(o => { o.castShadow = true; });
+		this.cyclist.root.traverse(o => { o.castShadow = true; });
+		this.scene.add(this.precip.lines, this.precip.points);
 	}
 
 	/**
-	 * @param lat, lon   traveller position
-	 * @param heading    compass bearing in degrees
-	 * @param travelled  metres travelled along the route (drives gait / wheels)
-	 * @param moving     0 idle .. 1 moving (blends the animation)
+	 * Render one frame sharing the map camera. `traveller` is null when no route is active.
+	 * heading: compass bearing in degrees; travelled drives gait / wheels; moving blends 0 idle .. 1 moving.
 	 */
-	public render(info: CameraInfo, lat: number, lon: number, heading: number, travelled: number, moving: number, mode: Mode): void {
+	public render(
+		info: CameraInfo,
+		traveller: {lat: number; lon: number; heading: number; travelled: number; moving: number; mode: Mode} | null,
+		precip: PrecipState,
+		dt: number
+	): void {
+		this.clock += dt;
 		const w = window.innerWidth;
 		const h = window.innerHeight;
 		const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -273,36 +432,60 @@ export default class Traveller3D {
 		this.camera.matrixWorld.copy(this.camera.matrix);
 		this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
 
-		// Floating origin: world content is offset by the wrapper position.
-		const p = MathUtils.degrees2meters(lat, lon);
 		const camPos = new THREE.Vector3().setFromMatrixPosition(this.camera.matrixWorld);
-		this.holder.position.set(p.x + info.originX, info.groundY, p.y + info.originZ);
-
-		// Exaggerate size with distance so the character stays readable (Tesla-style).
-		const dist = camPos.distanceTo(this.holder.position);
-		this.holder.scale.setScalar(MathUtils.clamp(dist / 24, 3, 80));
-
-		// streets-gl axes: +X = north, +Z = east. Model faces +X.
-		this.holder.rotation.y = -heading * Math.PI / 180;
-
-		this.walker.root.visible = mode === 'walk';
-		this.cyclist.root.visible = mode === 'bike';
-
-		if (mode === 'walk') {
-			this.walkPhase = (travelled / 0.75) * Math.PI;
-			this.walker.animate(this.walkPhase, moving);
-		} else {
-			this.cyclist.animate(travelled, moving);
-		}
-
-		const pulse = 1 + Math.sin(performance.now() / 300) * 0.06;
-		this.ring.scale.setScalar(pulse);
-
-		// Match the map's sun (sunDirection points from the sun to the ground).
 		const [sx, sy, sz] = info.sunDirection;
 		const day = info.sunIntensity > 0;
-		this.sun.position.set(-sx * 50, -sy * 50, -sz * 50).add(this.holder.position);
-		this.sun.target.position.copy(this.holder.position);
+
+		// Precipitation volume centred between the camera and the ground it looks at.
+		const viewDir = new THREE.Vector3(0, 0, -1).transformDirection(this.camera.matrixWorld);
+		const toGround = viewDir.y < -0.05 ? (camPos.y - info.groundY) / -viewDir.y : 400;
+		const target = camPos.clone().addScaledVector(viewDir, toGround);
+		const center = camPos.clone().lerp(target, 0.55);
+		center.y = info.groundY;
+		// Absolute (mercator) position of the centre, for world-anchored wrapping.
+		const anchor = new THREE.Vector2(center.x - info.originX, center.z - info.originZ);
+		this.precip.update(precip, this.clock, center, anchor, camPos.distanceTo(target));
+
+		this.holder.visible = !!traveller;
+
+		if (traveller) {
+			// Floating origin: world content is offset by the wrapper position.
+			const p = MathUtils.degrees2meters(traveller.lat, traveller.lon);
+			this.holder.position.set(p.x + info.originX, info.groundY, p.y + info.originZ);
+
+			// Exaggerate size with distance so the character stays readable (Tesla-style).
+			const dist = camPos.distanceTo(this.holder.position);
+			this.holder.scale.setScalar(MathUtils.clamp(dist / 24, 3, 80));
+
+			// streets-gl axes: +X = north, +Z = east. Model faces +X.
+			this.holder.rotation.y = -traveller.heading * Math.PI / 180;
+
+			this.walker.root.visible = traveller.mode === 'walk';
+			this.cyclist.root.visible = traveller.mode === 'bike';
+
+			if (traveller.mode === 'walk') {
+				this.walkPhase = (traveller.travelled / 0.75) * Math.PI;
+				this.walker.animate(this.walkPhase, traveller.moving);
+			} else {
+				this.cyclist.animate(traveller.travelled, traveller.moving);
+			}
+
+			this.ring.scale.setScalar(1 + Math.sin(this.clock * 3.3) * 0.06);
+
+			// Match the map's sun (sunDirection points from the sun to the ground).
+			const s = this.holder.scale.x;
+			this.sun.position.set(-sx * 30 * s, -sy * 30 * s, -sz * 30 * s).add(this.holder.position);
+			this.sun.target.position.copy(this.holder.position);
+			const cam = this.sun.shadow.camera;
+			cam.left = cam.bottom = -4 * s;
+			cam.right = cam.top = 4 * s;
+			cam.near = 1;
+			cam.far = 80 * s;
+			cam.updateProjectionMatrix();
+			this.shadowCatcher.visible = day;
+			(this.shadow.material as THREE.MeshBasicMaterial).opacity = day ? 0.12 : 0.28;
+		}
+
 		this.sun.intensity = day ? 2.6 : 0.4;
 		this.ambient.intensity = day ? 1.0 : 0.55;
 

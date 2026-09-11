@@ -127,6 +127,147 @@ async function getRoute(from, to, mode) {
 	});
 }
 
+// ---------- sun + shade ----------
+
+// Sun position (SunCalc formulas). Returns altitude (rad) and compass bearing of the sun (deg, 0 = north).
+function sunPosition(date, lat, lon) {
+	const rad = Math.PI / 180, e = rad * 23.4397;
+	const d = date.valueOf() / 864e5 - 0.5 + 2440588 - 2451545;
+	const M = rad * (357.5291 + 0.98560028 * d);
+	const L = M + rad * (1.9148 * Math.sin(M) + 0.02 * Math.sin(2 * M) + 0.0003 * Math.sin(3 * M)) + rad * 102.9372 + Math.PI;
+	const dec = Math.asin(Math.sin(L) * Math.sin(e));
+	const ra = Math.atan2(Math.sin(L) * Math.cos(e), Math.cos(L));
+	const H = rad * (280.16 + 360.9856235 * d) - rad * -lon - ra;
+	const phi = rad * lat;
+	const azimuthFromSouth = Math.atan2(Math.sin(H), Math.cos(H) * Math.sin(phi) - Math.tan(dec) * Math.cos(phi));
+	const altitude = Math.asin(Math.sin(phi) * Math.sin(dec) + Math.cos(phi) * Math.cos(dec) * Math.cos(H));
+	return {altitude, bearing: (azimuthFromSouth / rad + 180 + 360) % 360};
+}
+
+function buildingHeight(tags) {
+	const h = parseFloat(tags.height);
+	if (!Number.isNaN(h)) return h;
+	const levels = parseFloat(tags['building:levels']);
+	if (!Number.isNaN(levels)) return levels * 3.2 + 1;
+	return tags.building === 'house' || tags.building === 'detached' ? 7 : 10;
+}
+
+async function getBuildings(coords, radius) {
+	// Sample the route every ~60 m for Overpass' polyline "around" filter.
+	const pts = [];
+	let last = null;
+	for (const c of coords) {
+		if (!last || Math.hypot((c[0] - last[0]) * 111320, (c[1] - last[1]) * 90000) > 60) {
+			pts.push(c);
+			last = c;
+		}
+	}
+	pts.push(coords[coords.length - 1]);
+	const around = pts.map(([la, lo]) => `${la.toFixed(5)},${lo.toFixed(5)}`).join(',');
+	const q = `[out:json][timeout:40];way["building"](around:${radius},${around});out tags geom;`;
+	return cached(`bld:${q}`, 6 * 3600e3, async () => {
+		let res;
+		for (const endpoint of ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass-api.de/api/interpreter']) {
+			try {
+				res = await getJSON(endpoint, {method: 'POST', body: new URLSearchParams({data: q})});
+				break;
+			} catch (e) {
+				console.warn('overpass retry', e.message);
+			}
+		}
+		if (!res) throw new Error('building data unavailable (Overpass busy), try again');
+		return res.elements.filter(e => e.geometry?.length > 2).map(e => ({h: buildingHeight(e.tags || {}), geom: e.geometry}));
+	});
+}
+
+async function computeShade({coords, iso, duration_s}) {
+	const when = iso ? new Date(iso) : new Date();
+	const mid = coords[Math.floor(coords.length / 2)];
+	const sun = sunPosition(when, mid[0], mid[1]);
+	const altDeg = sun.altitude * 180 / Math.PI;
+
+	// Local metric projection around the route midpoint
+	const kx = 111320 * Math.cos(mid[0] * Math.PI / 180), ky = 110574;
+	const toXY = (la, lo) => [(lo - mid[1]) * kx, (la - mid[0]) * ky];
+
+	// Resample the route every 8 m
+	const samples = [];
+	let acc = 0;
+	for (let i = 1; i < coords.length; i++) {
+		const a = toXY(...coords[i - 1]), b = toXY(...coords[i]);
+		const seg = Math.hypot(b[0] - a[0], b[1] - a[1]);
+		for (let t = samples.length ? (8 - (acc % 8)) % 8 : 0; t < seg; t += 8) {
+			samples.push({x: a[0] + (b[0] - a[0]) * t / seg, y: a[1] + (b[1] - a[1]) * t / seg, d: acc + t});
+		}
+		acc += seg;
+	}
+
+	if (altDeg <= 0.5) {
+		return {sun: {altitude: altDeg, bearing: sun.bearing}, night: true, samples: samples.map(s => ({d: Math.round(s.d), shaded: true})), shadePct: 100, sunMinutes: 0, buildings: 0, length_m: Math.round(acc)};
+	}
+
+	const tanA = Math.tan(sun.altitude);
+	const reach = Math.min(220, Math.max(40, 80 / tanA));
+	const buildings = (await getBuildings(coords, Math.round(Math.min(reach, 160)))).map(b => {
+		const poly = b.geom.map(g => toXY(g.lat, g.lon));
+		const xs = poly.map(p => p[0]), ys = poly.map(p => p[1]);
+		return {h: b.h, poly, minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys)};
+	});
+
+	const CELL = 40;
+	const grid = new Map();
+	buildings.forEach((b, idx) => {
+		for (let gx = Math.floor(b.minX / CELL); gx <= Math.floor(b.maxX / CELL); gx++) {
+			for (let gy = Math.floor(b.minY / CELL); gy <= Math.floor(b.maxY / CELL); gy++) {
+				const k = `${gx},${gy}`;
+				if (!grid.has(k)) grid.set(k, []);
+				grid.get(k).push(idx);
+			}
+		}
+	});
+
+	const inside = (x, y, poly) => {
+		let c = false;
+		for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+			const [xi, yi] = poly[i], [xj, yj] = poly[j];
+			if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c;
+		}
+		return c;
+	};
+	const blockerAt = (x, y, minH) => {
+		const list = grid.get(`${Math.floor(x / CELL)},${Math.floor(y / CELL)}`);
+		if (!list) return false;
+		for (const idx of list) {
+			const b = buildings[idx];
+			if (b.h > minH && x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY && inside(x, y, b.poly)) return true;
+		}
+		return false;
+	};
+
+	const br = sun.bearing * Math.PI / 180;
+	const dx = Math.sin(br), dy = Math.cos(br);
+	let shadedLen = 0;
+	const out = samples.map(s => {
+		let shaded = false;
+		for (let t = 3; t <= reach && !shaded; t += 3) {
+			shaded = blockerAt(s.x + dx * t, s.y + dy * t, t * tanA);
+		}
+		if (shaded) shadedLen += 8;
+		return {d: Math.round(s.d), shaded};
+	});
+	const frac = samples.length ? shadedLen / (samples.length * 8) : 0;
+	return {
+		sun: {altitude: Math.round(altDeg * 10) / 10, bearing: Math.round(sun.bearing)},
+		night: false,
+		samples: out,
+		shadePct: Math.round(frac * 100),
+		sunMinutes: Math.round((duration_s || 0) * (1 - frac) / 60),
+		shadowRatio: Math.round(100 / tanA) / 100, // shadow length per metre of height
+		buildings: buildings.length,
+		length_m: Math.round(acc)
+	};
+}
+
 // ---------- agent ----------
 
 const TOOLS = [
@@ -255,6 +396,16 @@ http.createServer(async (req, res) => {
 			const [tLat, tLon] = (url.searchParams.get('to') || '').split(',').map(Number);
 			if ([fLat, fLon, tLat, tLon].some(Number.isNaN)) return send(res, 400, {error: 'from=lat,lon and to=lat,lon required'});
 			return send(res, 200, await getRoute({lat: fLat, lon: fLon}, {lat: tLat, lon: tLon}, url.searchParams.get('mode')));
+		}
+		if (url.pathname === '/api/shade' && req.method === 'POST') {
+			const body = await readBody(req);
+			if (!Array.isArray(body.coords) || body.coords.length < 2) return send(res, 400, {error: 'coords required'});
+			return send(res, 200, await computeShade(body));
+		}
+		if (url.pathname === '/api/sun') {
+			const lat = parseFloat(url.searchParams.get('lat')), lon = parseFloat(url.searchParams.get('lon'));
+			const p = sunPosition(url.searchParams.get('iso') ? new Date(url.searchParams.get('iso')) : new Date(), lat, lon);
+			return send(res, 200, {altitude: p.altitude * 180 / Math.PI, bearing: p.bearing});
 		}
 		if (url.pathname === '/api/agent' && req.method === 'POST') {
 			return send(res, 200, await runAgent(await readBody(req)));

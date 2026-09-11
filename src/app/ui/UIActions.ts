@@ -14,6 +14,8 @@ export default interface UIActions {
 	projectLatLon: (lat: number, lon: number) => [number, number] | null;
 	// Camera + lighting snapshot for overlay renderers that share the map's view (null until ready).
 	getCameraInfo: () => CameraInfo | null;
+	// Change a status-type graphics setting (e.g. 'ssr' -> 'low'), same as the settings panel.
+	setSettingStatus: (key: string, status: string) => void;
 }
 
 export interface CameraInfo {
@@ -23,6 +25,8 @@ export interface CameraInfo {
 	originZ: number;
 	groundY: number;
 	sunDirection: [number, number, number];
+	// Altitude of the sun the map is actually rendering (degrees; honours time-of-day presets).
+	sunAltitude: number;
 	sunIntensity: number;
 	ambientIntensity: number;
 }
