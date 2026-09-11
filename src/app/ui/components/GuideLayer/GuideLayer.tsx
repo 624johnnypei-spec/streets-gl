@@ -293,6 +293,9 @@ const GuideLayer: React.FC = () => {
 	const [skyOpen, setSkyOpen] = useState<boolean>(false);
 	const [demo, setDemo] = useState<string>('live');
 	const [openPin, setOpenPin] = useState<number | null>(null);
+	// Where routes start: set by "Set as start", else the browser's location, else a sensible default.
+	const originRef = useRef<{pos: LatLon; label: string} | null>(null);
+	const [originLabel, setOriginLabel] = useState<string>('');
 	const pinLayerRef = useRef<HTMLDivElement>(null);
 	const [renderedSunAlt, setRenderedSunAlt] = useState<number | null>(null);
 
@@ -428,9 +431,37 @@ const GuideLayer: React.FC = () => {
 		showOverview();
 	}, [multiplier, showOverview]);
 
-	const routeTo = useCallback(async (to: LatLon, mode: 'walk' | 'bike', label: string, fromOverride?: LatLon): Promise<void> => {
+	const chooseOrigin = useCallback(async (to: LatLon): Promise<{pos: LatLon; label: string}> => {
+		const far = (p: LatLon): boolean => haversine(p, to) > 150;
+		if (originRef.current && far(originRef.current.pos) && haversine(originRef.current.pos, to) < 30000) return originRef.current;
+		if (navigator.geolocation) {
+			const here = await new Promise<LatLon | null>(resolve => {
+				navigator.geolocation.getCurrentPosition(
+					p => resolve([p.coords.latitude, p.coords.longitude]),
+					() => resolve(null),
+					{timeout: 3000, maximumAge: 300000}
+				);
+			});
+			if (here && far(here) && haversine(here, to) < 30000) return {pos: here, label: 'Your location'};
+		}
 		const c = readCamera(actions);
-		const from: LatLon = fromOverride ?? [c.lat, c.lon];
+		const cam: LatLon = [c.lat, c.lon];
+		if (!Number.isNaN(c.lat) && far(cam) && haversine(cam, to) < 30000) return {pos: cam, label: 'Map centre'};
+		// Looking right at the destination: start from a well-known point instead of a 0 m route.
+		const station: LatLon = TOKYO;
+		const tower: LatLon = [35.6586, 139.7454];
+		return far(station) ? {pos: station, label: 'Tokyo Station'} : {pos: tower, label: 'Tokyo Tower'};
+	}, [actions]);
+
+	const routeTo = useCallback(async (to: LatLon, mode: 'walk' | 'bike', label: string, fromOverride?: LatLon): Promise<void> => {
+		let from: LatLon;
+		if (fromOverride) {
+			from = fromOverride;
+		} else {
+			const o = await chooseOrigin(to);
+			from = o.pos;
+			setOriginLabel(o.label);
+		}
 		try {
 			const r = await fetch(`/api/route?from=${from[0]},${from[1]}&to=${to[0]},${to[1]}&mode=${mode}`);
 			const data = await r.json();
@@ -439,7 +470,7 @@ const GuideLayer: React.FC = () => {
 		} catch (e) {
 			setMessages(m => [...m, {role: 'assistant', content: `Couldn't find a ${mode} route: ${(e as Error).message}`}]);
 		}
-	}, [actions, startRoute]);
+	}, [chooseOrigin, startRoute]);
 
 	const switchMode = useCallback((mode: 'walk' | 'bike'): void => {
 		const nav = navRef.current;
@@ -714,6 +745,7 @@ const GuideLayer: React.FC = () => {
 			// map not ready
 		}
 		if (d.ride) {
+			setOriginLabel('Tokyo Tower');
 			void routeTo([35.6812, 139.7671], 'bike', 'Tokyo Station', [35.6586, 139.7454]);
 		}
 	}, [actions, routeTo]);
@@ -727,8 +759,19 @@ const GuideLayer: React.FC = () => {
 				void routeTo([d.lat, d.lon], d.mode === 'bike' ? 'bike' : 'walk', d.name || 'Selected place');
 			}
 		};
+		const onOrigin = (e: Event): void => {
+			const d = (e as CustomEvent<{lat: number; lon: number; name?: string}>).detail;
+			if (d && Number.isFinite(d.lat) && Number.isFinite(d.lon)) {
+				originRef.current = {pos: [d.lat, d.lon], label: d.name || 'Selected place'};
+				setOriginLabel(originRef.current.label);
+			}
+		};
 		window.addEventListener('guide:route', onRoute);
-		return (): void => window.removeEventListener('guide:route', onRoute);
+		window.addEventListener('guide:origin', onOrigin);
+		return (): void => {
+			window.removeEventListener('guide:route', onRoute);
+			window.removeEventListener('guide:origin', onOrigin);
+		};
 	}, [routeTo]);
 
 	// Console / fallback hook: guide.routeTo([35.6812, 139.7671], 'bike', 'Tokyo Station')
@@ -816,7 +859,7 @@ const GuideLayer: React.FC = () => {
 		{route && !riding && <section className={styles.route}>
 			<header className={styles.route__head}>
 				<div>
-					<small>Route to</small>
+					<small>{originLabel ? `From ${originLabel} to` : 'Route to'}</small>
 					<b>{route.label}</b>
 				</div>
 				<button onClick={endRoute} aria-label="Close route">✕</button>

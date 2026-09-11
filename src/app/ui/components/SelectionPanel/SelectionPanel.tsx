@@ -294,6 +294,7 @@ const SelectionPanel: React.FC = () => {
 		window.dispatchEvent(new CustomEvent('guide:route', {
 			detail: {lat: center.lat, lon: center.lon, name: name ?? 'Selected building', mode}
 		}));
+		setActiveFeature(null); // get out of the way of the route overview
 	};
 
 	let innerClassNames = styles.selectionInfo;
@@ -355,6 +356,15 @@ const SelectionPanel: React.FC = () => {
 							<span>{goDisabled ? 'Locating…' : 'Bike here'}</span>
 						</button>
 					</div>
+					<button
+						className={styles.setStart}
+						disabled={goDisabled}
+						onClick={(): void => {
+							if (isLatLon(center)) {
+								window.dispatchEvent(new CustomEvent('guide:origin', {detail: {lat: center.lat, lon: center.lon, name: name ?? 'Selected building'}}));
+							}
+						}}
+					>Set as start point</button>
 					{pl && <div className={styles.plateau}>
 						<div><b>{pl.height_m ? `${Math.round(pl.height_m)} m` : '–'}</b><span>Height</span></div>
 						<div><b>{pl.storeys ?? '–'}</b><span>Floors</span></div>

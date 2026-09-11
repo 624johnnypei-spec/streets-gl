@@ -266,3 +266,19 @@
 		line-height: 1.4;
 	}
 }
+
+.setStart {
+	margin-top: 8px;
+	width: 100%;
+	min-height: 36px;
+	border: 1px solid rgba(127, 127, 127, 0.35);
+	border-radius: 10px;
+	background: transparent;
+	color: inherit;
+	font-weight: 600;
+	font-size: 13px;
+	cursor: pointer;
+
+	&:hover { background: rgba(127, 127, 127, 0.12); }
+	&:disabled { opacity: 0.5; cursor: default; }
+}

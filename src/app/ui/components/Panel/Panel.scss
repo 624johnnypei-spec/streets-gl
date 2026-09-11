@@ -1,3 +1,4 @@
 .panel {
 	position: absolute;
+	z-index: 5; // above the guide layer's route / 3D / weather canvases
 }

@@ -456,7 +456,7 @@ export default class Traveller3D {
 
 			// Exaggerate size with distance so the character stays readable (Tesla-style).
 			const dist = camPos.distanceTo(this.holder.position);
-			this.holder.scale.setScalar(MathUtils.clamp(dist / 24, 3, 80));
+			this.holder.scale.setScalar(MathUtils.clamp(dist / 30, 1, 60)); // real size up close, exaggerated when far
 
 			// streets-gl axes: +X = north, +Z = east. Model faces +X.
 			this.holder.rotation.y = -traveller.heading * Math.PI / 180;
