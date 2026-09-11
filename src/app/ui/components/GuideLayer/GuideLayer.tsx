@@ -1034,6 +1034,43 @@ function drawRoute(ctx: CanvasRenderingContext2D, actions: UIActions, nav: NavSt
 		ctx.stroke();
 	}
 
+	// Checkpoints: a circle at every turn, placed exactly on the drawn line, so you can see it lines up.
+	const nextIdx = nav.path.stepOffsets.findIndex(o => o > nav.traveled + 3);
+	const pulse = 1 + 0.25 * Math.sin(performance.now() / 180);
+	nav.path.stepOffsets.forEach((off, i) => {
+		if (i === 0 || i === nav.path.stepOffsets.length - 1) return; // start/end drawn separately
+		const at = nav.path.pointAt(off);
+		const p = actions.projectLatLon(at[0], at[1]);
+		if (!p) return;
+		const passed = off <= nav.traveled + 3;
+		const isNext = i === nextIdx;
+		const r = isNext ? 8 : 6;
+		if (isNext) {
+			ctx.beginPath();
+			ctx.arc(p[0], p[1], r * 1.9 * pulse, 0, Math.PI * 2);
+			ctx.fillStyle = 'rgba(47, 123, 255, 0.18)';
+			ctx.fill();
+		}
+		ctx.beginPath();
+		ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
+		ctx.fillStyle = passed ? 'rgba(150, 156, 166, 0.9)' : '#ffffff';
+		ctx.fill();
+		ctx.lineWidth = isNext ? 3.5 : 2.5;
+		ctx.strokeStyle = passed ? 'rgba(90, 96, 106, 0.9)' : (isNext ? '#2f7bff' : colorAt(off));
+		ctx.stroke();
+	});
+
+	const start = screen[0];
+	if (start) {
+		ctx.beginPath();
+		ctx.arc(start[0], start[1], 7, 0, Math.PI * 2);
+		ctx.fillStyle = '#22c55e';
+		ctx.fill();
+		ctx.lineWidth = 3;
+		ctx.strokeStyle = '#ffffff';
+		ctx.stroke();
+	}
+
 	const end = screen[screen.length - 1];
 	if (end) {
 		ctx.fillStyle = '#14161A';
