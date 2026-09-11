@@ -71,6 +71,13 @@
 	}
 }
 
+// The map is a full-screen app: never let the document scroll (hidden panels sit below the fold).
+:global(html) {
+	overflow: hidden;
+	height: 100%;
+	overscroll-behavior: none;
+}
+
 .overlay {
 	position: fixed;
 	inset: 0;
@@ -339,9 +346,17 @@ kbd {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
+		gap: 8px;
 		font-size: 11.5px;
 		color: var(--ink-3);
 		font-variant-numeric: tabular-nums;
+	}
+
+	&__mini {
+		display: none;
+		font-size: 15px;
+		font-weight: 600;
+		color: var(--ink);
 	}
 
 	&__now {
@@ -903,4 +918,312 @@ kbd {
 
 @keyframes pulse {
 	50% { opacity: 0.2; }
+}
+
+
+// ---------- clickable place pins ----------
+
+.pins {
+	position: fixed;
+	inset: 0;
+	z-index: 4;
+	pointer-events: none;
+}
+
+.pin {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 0;
+	height: 0;
+
+	&__label {
+		position: absolute;
+		left: 0;
+		bottom: 6px;
+		transform: translateX(-50%);
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 11px 6px 8px;
+		border: 1px solid var(--line);
+		border-radius: 999px;
+		background: var(--panel-hi);
+		color: var(--ink);
+		box-shadow: var(--lift);
+		font: 600 12.5px var(--font-web);
+		white-space: nowrap;
+		cursor: pointer;
+		pointer-events: auto;
+
+		i {
+			width: 10px;
+			height: 10px;
+			border-radius: 50%;
+			background: linear-gradient(135deg, var(--sky-a), var(--sky-b));
+			box-shadow: 0 0 0 3px color-mix(in srgb, var(--sky-a) 25%, transparent);
+		}
+
+		&::after {
+			content: '';
+			position: absolute;
+			left: 50%;
+			bottom: -7px;
+			width: 2px;
+			height: 7px;
+			transform: translateX(-50%);
+			background: var(--ink-3);
+		}
+	}
+
+	&--open { z-index: 1; }
+
+	&__card {
+		position: absolute;
+		left: 0;
+		bottom: 48px;
+		transform: translateX(-50%);
+		display: grid;
+		gap: 6px;
+		width: 240px;
+		padding: 12px;
+		border: 1px solid var(--line);
+		border-radius: 14px;
+		background: var(--panel-hi);
+		color: var(--ink);
+		box-shadow: var(--lift);
+		backdrop-filter: blur(22px);
+		-webkit-backdrop-filter: blur(22px);
+		font-family: var(--font-web);
+		pointer-events: auto;
+
+		b { font-size: 14px; }
+
+		small {
+			font-size: 12px;
+			color: var(--ink-2);
+		}
+	}
+
+	&__go {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 6px;
+		margin-top: 4px;
+
+		button {
+			min-height: 44px;
+			border: 0;
+			border-radius: 10px;
+			background: linear-gradient(135deg, var(--sky-a), var(--sky-b));
+			color: #fff;
+			font: 700 13.5px var(--font-web);
+			cursor: pointer;
+
+			& + button {
+				background: var(--ink);
+				color: var(--panel-hi);
+			}
+		}
+	}
+}
+
+// ---------- demo moments ----------
+
+.demos {
+	position: absolute;
+	z-index: 4;
+	left: 50%;
+	bottom: 20px;
+	transform: translateX(-50%);
+	display: flex;
+	gap: 2px;
+	max-width: calc(100vw - 680px);
+	padding: 4px;
+	overflow-x: auto;
+	scrollbar-width: none;
+	border-radius: 14px;
+	background: var(--panel);
+	border: 1px solid var(--line);
+	box-shadow: var(--lift);
+	backdrop-filter: blur(22px) saturate(160%);
+	-webkit-backdrop-filter: blur(22px) saturate(160%);
+	font-family: var(--font-web);
+	transition: background 0.8s ease;
+
+	&::-webkit-scrollbar { display: none; }
+
+	button {
+		flex: 0 0 auto;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		height: 34px;
+		padding: 0 12px;
+		border: 0;
+		border-radius: 10px;
+		background: none;
+		color: var(--ink-2);
+		font: 600 12.5px var(--font-web);
+		white-space: nowrap;
+		cursor: pointer;
+
+		&:hover { background: var(--line); color: var(--ink); }
+
+		i {
+			font-style: normal;
+			font-size: 12px;
+			opacity: 0.8;
+		}
+	}
+
+	&--on {
+		background: linear-gradient(135deg, var(--sky-a), var(--sky-b)) !important;
+		color: #fff !important;
+	}
+}
+
+.guide[data-route] .demos {
+	left: calc(50% + 180px);
+	max-width: calc(100vw - 720px);
+}
+
+// ---------- phones ----------
+
+@media (max-width: 720px) {
+	kbd { display: none; }
+
+	// Ask bar docks to the bottom edge; results open upward.
+	.cmd {
+		top: auto;
+		bottom: calc(12px + env(safe-area-inset-bottom));
+		left: 12px;
+		right: 12px;
+		transform: none;
+		width: auto;
+		min-width: 0;
+		display: flex;
+		flex-direction: column-reverse;
+
+		&__panel {
+			border-top: 0;
+			border-bottom: 1px solid var(--line);
+			max-height: 45vh;
+		}
+	}
+
+	.guide[data-route] .cmd { display: none; }
+
+	.demos {
+		left: 12px;
+		right: 12px;
+		bottom: calc(76px + env(safe-area-inset-bottom));
+		transform: none;
+		max-width: none;
+	}
+
+	.guide[data-route] .demos { display: none; }
+
+	// Sky collapses to a pill under the map buttons; tap to expand.
+	.sky {
+		top: calc(64px + env(safe-area-inset-top));
+		right: 12px;
+		width: min(300px, calc(100vw - 24px));
+		padding: 8px 12px;
+		gap: 10px;
+		border-radius: 16px;
+
+		&::before { display: none; }
+
+		&__mini { display: inline; }
+	}
+
+	.guide[data-sky='closed'] .sky {
+		width: auto;
+
+		> *:not(header) { display: none; }
+
+		header > span:last-child { display: none; }
+	}
+
+	.guide[data-sky='open'] .sky header > span:last-child { display: none; }
+
+	// Route panel becomes a bottom sheet.
+	.route {
+		top: auto;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		width: auto;
+		max-height: 58vh;
+		overflow-y: auto;
+		padding: 14px 16px calc(16px + env(safe-area-inset-bottom));
+		gap: 12px;
+		border-radius: 20px 20px 0 0;
+		border-bottom: 0;
+
+		&::before {
+			left: 50%;
+			right: auto;
+			top: 6px;
+			width: 36px;
+			height: 4px;
+			transform: translateX(-50%);
+			background: var(--line-strong);
+		}
+
+		&__time strong { font-size: 46px; }
+	}
+
+	// Bikr ride HUD on a phone: tighter instruction card, controls on their own row.
+	.ride {
+		&__instruction {
+			top: calc(10px + env(safe-area-inset-top));
+			grid-template-columns: 52px minmax(0, 1fr) auto;
+			gap: 12px;
+			min-height: 84px;
+			padding: 12px;
+
+			strong { font-size: 19px; }
+
+			> button:first-of-type { display: none; }
+		}
+
+		&__maneuver {
+			width: 52px;
+			height: 52px;
+			font-size: 28px;
+		}
+
+		&__ghost {
+			min-width: 52px;
+			padding: 0 10px;
+		}
+
+		&__status {
+			top: calc(106px + env(safe-area-inset-top));
+			max-width: calc(100vw - 24px);
+			font-size: 12px;
+			white-space: nowrap;
+
+			small { font-size: 11px; }
+		}
+
+		&__bar {
+			bottom: calc(12px + env(safe-area-inset-bottom));
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+			row-gap: 10px;
+			min-height: 0;
+
+			strong { font-size: 20px; }
+		}
+
+		&__controls {
+			grid-column: 1 / -1;
+			justify-content: center;
+			border-left: 0 !important;
+			border-top: 1px solid rgba(255, 255, 255, 0.14);
+			padding-top: 10px !important;
+		}
+	}
 }

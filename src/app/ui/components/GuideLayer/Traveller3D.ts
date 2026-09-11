@@ -362,7 +362,8 @@ export default class Traveller3D {
 	private readonly ring: THREE.Mesh;
 	private readonly shadow: THREE.Mesh;
 	private readonly shadowCatcher: THREE.Mesh;
-	private readonly precip = new Precipitation();
+	// Phones get a lighter precipitation volume.
+	private readonly precip = new Precipitation(window.innerWidth < 720 ? 9000 : 22000);
 	private walkPhase = 0;
 	private clock = 0;
 
@@ -419,7 +420,7 @@ export default class Traveller3D {
 		this.clock += dt;
 		const w = window.innerWidth;
 		const h = window.innerHeight;
-		const dpr = Math.min(window.devicePixelRatio || 1, 2);
+		const dpr = Math.min(window.devicePixelRatio || 1, w < 720 ? 1.5 : 2);
 
 		if (this.renderer.getPixelRatio() !== dpr) this.renderer.setPixelRatio(dpr);
 		const size = this.renderer.getSize(new THREE.Vector2());

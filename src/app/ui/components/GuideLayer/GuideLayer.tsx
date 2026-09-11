@@ -172,6 +172,33 @@ const MapClock: React.FC<{onMinute: (t: number) => void; forceLive: number}> = (
 	return null;
 };
 
+// Demo moments. Times resolve against Tokyo's real sun for the map's current day.
+interface Demo {
+	id: string;
+	label: string;
+	glyph: string;
+	weather: string;
+	at: ((t: ReturnType<typeof SunCalc.getTimes>, day: string) => number) | null;
+	ride?: boolean;
+}
+
+const hhmm = (day: string, time: string): number => Date.parse(`${day}T${time}:00+09:00`);
+const DEMOS: Demo[] = [
+	{id: 'live', label: 'Live', glyph: '●', weather: 'live', at: null},
+	{id: 'sunrise', label: 'Sunrise', glyph: '◒', weather: 'clear', at: (t): number => t.sunrise.getTime() + 12 * 60e3},
+	{id: 'morning', label: 'Morning', glyph: '◔', weather: 'clear', at: (t, d): number => hhmm(d, '08:30')},
+	{id: 'noon', label: 'Noon', glyph: '○', weather: 'clear', at: (t): number => t.solarNoon.getTime()},
+	{id: 'afternoon', label: 'Afternoon', glyph: '◕', weather: 'clear', at: (t, d): number => hhmm(d, '15:00')},
+	{id: 'golden', label: 'Golden hour', glyph: '◓', weather: 'clear', at: (t): number => t.sunset.getTime() - 25 * 60e3},
+	{id: 'twilight', label: 'Twilight', glyph: '◐', weather: 'clear', at: (t): number => t.sunset.getTime() + 18 * 60e3},
+	{id: 'night', label: 'Night', glyph: '●', weather: 'clear', at: (t, d): number => hhmm(d, '21:30')},
+	{id: 'rain', label: 'Rain', glyph: '☂︎', weather: 'rain', at: (t, d): number => hhmm(d, '16:30')},
+	{id: 'storm', label: 'Night storm', glyph: 'ϟ', weather: 'storm', at: (t, d): number => hhmm(d, '20:00')},
+	{id: 'snow', label: 'Snow', glyph: '❄︎', weather: 'snow', at: (t, d): number => hhmm(d, '10:30')},
+	{id: 'fog', label: 'Fog', glyph: '≋', weather: 'fog', at: (t): number => t.sunrise.getTime() + 50 * 60e3},
+	{id: 'shade', label: 'Shade ride', glyph: '▮', weather: 'clear', at: (t, d): number => hhmm(d, '15:00'), ride: true}
+];
+
 // Sun path from sunrise to sunset with the current sun (or a sub-horizon marker at night).
 const SunArc: React.FC<{time: number; at: LatLon; altitude: number}> = ({time, at, altitude}) => {
 	const times = SunCalc.getTimes(new Date(time), at[0], at[1]);
@@ -263,6 +290,10 @@ const GuideLayer: React.FC = () => {
 	const [shadeBusy, setShadeBusy] = useState<boolean>(false);
 	const [cmdOpen, setCmdOpen] = useState<boolean>(false);
 	const [liveTick, setLiveTick] = useState<number>(0);
+	const [skyOpen, setSkyOpen] = useState<boolean>(false);
+	const [demo, setDemo] = useState<string>('live');
+	const [openPin, setOpenPin] = useState<number | null>(null);
+	const pinLayerRef = useRef<HTMLDivElement>(null);
 	const [renderedSunAlt, setRenderedSunAlt] = useState<number | null>(null);
 
 	// Follow the sun the map is actually rendering (time presets included).
@@ -274,6 +305,15 @@ const GuideLayer: React.FC = () => {
 		return (): void => clearInterval(timer);
 	}, [actions]);
 	const inputRef = useRef<HTMLInputElement>(null);
+
+	// Focus/scrollIntoView can still scroll an overflow:hidden root; snap it back.
+	useEffect(() => {
+		const onScroll = (): void => {
+			if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+		};
+		window.addEventListener('scroll', onScroll);
+		return (): void => window.removeEventListener('scroll', onScroll);
+	}, []);
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent): void => {
@@ -562,7 +602,21 @@ const GuideLayer: React.FC = () => {
 				travellerRef.current.render(info, travellerState, precipRef.current, dt);
 			}
 
-			drawPins(ctx, actions, placesRef.current);
+			// Place pins are DOM buttons so they can be clicked; keep them glued to the map.
+			const pinEls = pinLayerRef.current?.children;
+			if (pinEls) {
+				for (let i = 0; i < pinEls.length; i++) {
+					const el = pinEls[i] as HTMLElement;
+					const p = placesRef.current[Number(el.dataset.idx)];
+					const sp = p ? actions.projectLatLon(p.lat, p.lon) : null;
+					if (sp && sp[0] > -80 && sp[1] > -80 && sp[0] < w + 80 && sp[1] < h + 80) {
+						el.style.display = 'block';
+						el.style.transform = `translate(${sp[0]}px, ${sp[1]}px)`;
+					} else {
+						el.style.display = 'none';
+					}
+				}
+			}
 			fxRef.current.draw(fxCtx, dt, w, h, lookRef.current, !travellerRef.current);
 		};
 
@@ -632,6 +686,35 @@ const GuideLayer: React.FC = () => {
 		}
 	}, [actions, applyActions, busy, messages]);
 
+	const runDemo = useCallback((d: Demo): void => {
+		setDemo(d.id);
+		setWeatherMode(d.weather);
+		setLiveTick(n => n + 1);
+		const day = new Date(mapTimeRef.current).toLocaleDateString('sv-SE', {timeZone: 'Asia/Tokyo'});
+		const times = SunCalc.getTimes(new Date(`${day}T12:00:00+09:00`), TOKYO[0], TOKYO[1]);
+		try {
+			actions.setTime(d.at ? d.at(times, day) : Date.now());
+		} catch (e) {
+			// map not ready
+		}
+		if (d.ride) {
+			void routeTo([35.6812, 139.7671], 'bike', 'Tokyo Station', [35.6586, 139.7454]);
+		}
+	}, [actions, routeTo]);
+
+	// "Go here" from other panels (e.g. the building selection panel)
+	useEffect(() => {
+		const onRoute = (e: Event): void => {
+			const d = (e as CustomEvent<{lat: number; lon: number; name?: string; mode?: 'walk' | 'bike'}>).detail;
+			if (d && Number.isFinite(d.lat) && Number.isFinite(d.lon)) {
+				setOpenPin(null);
+				void routeTo([d.lat, d.lon], d.mode === 'bike' ? 'bike' : 'walk', d.name || 'Selected place');
+			}
+		};
+		window.addEventListener('guide:route', onRoute);
+		return (): void => window.removeEventListener('guide:route', onRoute);
+	}, [routeTo]);
+
 	// Console / fallback hook: guide.routeTo([35.6812, 139.7671], 'bike', 'Tokyo Station')
 	useEffect(() => {
 		(window as any).guide = {routeTo, send, setWeatherMode, beginFollow, showOverview, actions, nav: navRef};
@@ -651,17 +734,40 @@ const GuideLayer: React.FC = () => {
 				: `${shade.shadePct}% of this route is in building shade at ${tokyoClock(shade.at)}. Sun ${shade.sun.altitude.toFixed(0)}° from the ${COMPASS[Math.round(shade.sun.bearing / 22.5) % 16]}, ${shade.buildings} buildings checked.`)
 			: '';
 
-	return <div className={styles.guide} data-phase={phase}>
+	return <div className={styles.guide} data-phase={phase} data-route={route && !riding ? '' : undefined} data-sky={skyOpen ? 'open' : 'closed'}>
 		<MapClock onMinute={onMinute} forceLive={liveTick}/>
 		<canvas ref={canvasRef} className={styles.overlay}/>
 		<canvas ref={modelCanvasRef} className={`${styles.overlay} ${styles['overlay--model']}`}/>
 		<canvas ref={fxCanvasRef} className={`${styles.overlay} ${styles['overlay--fx']}`}/>
 		<div ref={avatarRef} className={styles.avatar} style={{display: 'none'}}>{navMode === 'bike' ? '🚴' : '🚶'}</div>
 
+		<div ref={pinLayerRef} className={styles.pins}>
+			{places.slice(0, 8).map((p, i) => <div key={`${p.name}${p.lat}`} data-idx={i} className={`${styles.pin} ${openPin === i ? styles['pin--open'] : ''}`} style={{display: 'none'}}>
+				<button className={styles.pin__label} onClick={(): void => setOpenPin(openPin === i ? null : i)}>
+					<i/>{p.name.length > 24 ? p.name.slice(0, 23) + '…' : p.name}
+				</button>
+				{openPin === i && <div className={styles.pin__card}>
+					<b>{p.name}</b>
+					{p.note && <small>{p.note}</small>}
+					<div className={styles.pin__go}>
+						<button onClick={(): void => {
+							setOpenPin(null);
+							void routeTo([p.lat, p.lon], 'walk', p.name);
+						}}>Walk here</button>
+						<button onClick={(): void => {
+							setOpenPin(null);
+							void routeTo([p.lat, p.lon], 'bike', p.name);
+						}}>Bike here</button>
+					</div>
+				</div>}
+			</div>)}
+		</div>
+
 		{/* Sky panel: sun arc, conditions, rain outlook */}
 		<section className={styles.sky}>
-			<header className={styles.sky__head}>
+			<header className={styles.sky__head} onClick={(): void => setSkyOpen(!skyOpen)}>
 				<span className={styles.phaseTag}>{PHASE_LABEL[phase]}</span>
+				<span className={styles.sky__mini}>{KIND_ICON[look.kind]} {weather ? `${weather.now.tempC}°` : ''}</span>
 				<span>{weather?.area ?? 'Tokyo'} · {tokyoClock(mapTime)}</span>
 			</header>
 			<SunArc time={mapTime} at={here} altitude={sunAltitude}/>
@@ -681,7 +787,10 @@ const GuideLayer: React.FC = () => {
 				{['live', 'clear', 'rain', 'storm', 'snow', 'fog'].map(m => <button
 					key={m}
 					className={weatherMode === m ? styles.on : ''}
-					onClick={(): void => setWeatherMode(m)}
+					onClick={(): void => {
+						setWeatherMode(m);
+						setDemo('');
+					}}
 					title={m === 'live' ? 'Live weather' : `Preview ${m}`}
 				>{m === 'live' ? 'LIVE' : KIND_ICON[m as WeatherKind]}</button>)}
 			</div>
@@ -746,6 +855,13 @@ const GuideLayer: React.FC = () => {
 				</div>
 			</div>
 		</div>}
+
+		{/* Demo moments */}
+		{!riding && <nav className={styles.demos} aria-label="Demo moments">
+			{DEMOS.map(d => <button key={d.id} className={demo === d.id ? styles['demos--on'] : ''} onClick={(): void => runDemo(d)}>
+				<i>{d.glyph}</i>{d.label}
+			</button>)}
+		</nav>}
 
 		{/* Ask the map (ai&): command bar */}
 		{!riding && <section className={`${styles.cmd} ${cmdOpen ? styles['cmd--open'] : ''}`}>
@@ -871,30 +987,6 @@ function drawRoute(ctx: CanvasRenderingContext2D, actions: UIActions, nav: NavSt
 		ctx.moveTo(end[0], end[1]);
 		ctx.lineTo(end[0], end[1] - 8);
 		ctx.stroke();
-	}
-}
-
-function drawPins(ctx: CanvasRenderingContext2D, actions: UIActions, places: Place[]): void {
-	ctx.font = '600 12px "Zen Kaku Gothic New", "Hiragino Kaku Gothic ProN", Inter, sans-serif';
-	ctx.textAlign = 'center';
-	for (const p of places.slice(0, 8)) {
-		const s = actions.projectLatLon(p.lat, p.lon);
-		if (!s || s[0] < -50 || s[1] < -50 || s[0] > window.innerWidth + 50 || s[1] > window.innerHeight + 50) continue;
-		ctx.fillStyle = '#1B3A5C';
-		ctx.strokeStyle = '#fff';
-		ctx.lineWidth = 2;
-		ctx.beginPath();
-		ctx.arc(s[0], s[1] - 10, 5, 0, Math.PI * 2);
-		ctx.fill();
-		ctx.stroke();
-		const label = p.name.length > 22 ? p.name.slice(0, 21) + '…' : p.name;
-		const w = ctx.measureText(label).width + 14;
-		ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-		ctx.beginPath();
-		ctx.roundRect(s[0] - w / 2, s[1] - 40, w, 22, 6);
-		ctx.fill();
-		ctx.fillStyle = '#14161A';
-		ctx.fillText(label, s[0], s[1] - 25);
 	}
 }
 

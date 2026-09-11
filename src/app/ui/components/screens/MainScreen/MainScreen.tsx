@@ -73,7 +73,7 @@ const MainScreen: React.FC = () => {
 			}
 			<DebugInfo showRenderGraph={showRenderGraph}/>
 			<DataTimestamp/>
-			<TimePanel/>
+			{window.innerWidth >= 720 && <TimePanel/>}
 			<SelectionPanel/>
 			<LegalAttributionPanel/>
 			<CompassPanel/>
