@@ -18,11 +18,12 @@ COPY . .
 
 RUN npm run build
 
-FROM node:19-alpine as runner
+FROM node:22-alpine AS runner
 WORKDIR /usr/src/app
 
 COPY --from=builder /usr/src/builder/build ./build
 COPY --from=builder /usr/src/builder/package.json ./
+COPY --from=builder /usr/src/builder/server.js ./
 
 RUN apk add pngquant
 
@@ -32,7 +33,6 @@ RUN find ./build/models \
     -type f -name "*.png" \
     -exec pngquant --force --quality 65-80 --skip-if-larger --output {} {} \;
 
-RUN npm install http-server
 
 EXPOSE 8080
-CMD ["npm", "start"]
+CMD ["node", "server.js"]
