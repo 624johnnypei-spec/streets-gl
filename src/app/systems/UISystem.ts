@@ -14,6 +14,8 @@ import TileLoadingSystem, {OverpassEndpoint} from "~/app/systems/TileLoadingSyst
 import UISystemState from "~/app/ui/UISystemState";
 import RenderGraphSnapshot from "~/app/ui/RenderGraphSnapshot";
 import UIActions from "~/app/ui/UIActions";
+import SceneSystem from "~/app/systems/SceneSystem";
+import Vec3 from "~/lib/math/Vec3";
 
 const FPSUpdateInterval = 0.4;
 
@@ -110,6 +112,28 @@ export default class UISystem extends System {
 			},
 			getControlsStateHash: (): string => {
 				return this.systemManager.getSystem(ControlsSystem).getCurrentStateHash();
+			},
+			projectLatLon: (lat: number, lon: number): [number, number] | null => {
+				const {camera, wrapper} = this.systemManager.getSystem(SceneSystem).objects;
+				const controls = this.systemManager.getSystem(ControlsSystem);
+
+				if (!controls.isReady) {
+					return null;
+				}
+
+				const groundY = controls.getGroundControlsTarget().y;
+				const position = MathUtils.degrees2meters(lat, lon);
+				// The scene uses a floating origin: world content lives in `wrapper`, shifted by -camera.xz.
+				const world = new Vec3(position.x + wrapper.position.x, groundY + 1, position.y + wrapper.position.z);
+				const cameraSpace = Vec3.applyMatrix4(world, camera.matrixWorldInverse);
+
+				if (cameraSpace.z > -1) {
+					return null;
+				}
+
+				const ndc = Vec3.applyMatrix4(cameraSpace, camera.projectionMatrix);
+
+				return [(ndc.x + 1) / 2 * window.innerWidth, (1 - ndc.y) / 2 * window.innerHeight];
 			}
 		}
 

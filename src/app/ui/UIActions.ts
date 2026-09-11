@@ -10,4 +10,6 @@ export default interface UIActions {
 	setOverpassEndpoints: (endpoints: OverpassEndpoint[]) => void;
 	resetOverpassEndpoints: () => void;
 	getControlsStateHash: () => string;
+	// Screen position (CSS px) of a ground point, or null when it is behind the camera.
+	projectLatLon: (lat: number, lon: number) => [number, number] | null;
 }

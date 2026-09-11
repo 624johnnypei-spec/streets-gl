@@ -15,6 +15,7 @@ import GeolocationButton from "~/app/ui/components/GeolocationButton";
 import styles from './MainScreen.scss';
 import SavedPlacesModalPanel from "~/app/ui/components/SavedPlacesModalPanel";
 import DataTimestamp from "~/app/ui/components/DataTimestamp";
+import GuideLayer from "~/app/ui/components/GuideLayer";
 
 const MainScreen: React.FC = () => {
 	const atoms = useContext(AtomsContext);
@@ -77,6 +78,7 @@ const MainScreen: React.FC = () => {
 			<LegalAttributionPanel/>
 			<CompassPanel/>
 			<GeolocationButton/>
+			<GuideLayer/>
 			{
 				isRenderGraphVisible && (
 					<RenderGraphViewer

@@ -125,6 +125,10 @@ export default class ControlsSystem extends System {
 	public setState(lat: number, lon: number, pitch: number, yaw: number, distance: number): void {
 		const position = MathUtils.degrees2meters(lat, lon);
 
+		if (!this.state) {
+			this.state = {} as ControlsState;
+		}
+
 		this.state.x = position.x;
 		this.state.z = position.y;
 		this.state.pitch = MathUtils.toRad(pitch);
@@ -237,6 +241,10 @@ export default class ControlsSystem extends System {
 		}
 
 		return 0;
+	}
+
+	public get isReady(): boolean {
+		return !!this.groundNavigator;
 	}
 
 	public getGroundControlsTarget(): Vec3 {

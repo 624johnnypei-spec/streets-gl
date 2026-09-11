@@ -107,6 +107,26 @@ async function findNearby(lat, lon, category, radius = 800) {
 	});
 }
 
+const MANEUVER = {turn: 'Turn', 'new name': 'Continue', depart: 'Head', arrive: 'Arrive', merge: 'Merge', fork: 'Keep', 'end of road': 'Turn', continue: 'Continue', roundabout: 'Enter the roundabout', rotary: 'Enter the roundabout', 'on ramp': 'Take the ramp', 'off ramp': 'Take the exit'};
+
+async function getRoute(from, to, mode) {
+	const profile = mode === 'bike' ? 'routed-bike' : 'routed-foot';
+	const url = `https://routing.openstreetmap.de/${profile}/route/v1/driving/${(+from.lon).toFixed(6)},${(+from.lat).toFixed(6)};${(+to.lon).toFixed(6)},${(+to.lat).toFixed(6)}?overview=full&geometries=geojson&steps=true`;
+	return cached(`route:${url}`, 30 * 60e3, async () => {
+		const d = await getJSON(url);
+		if (d.code !== 'Ok' || !d.routes?.length) throw new Error(`no ${mode} route found`);
+		const r = d.routes[0];
+		const steps = r.legs.flatMap(l => l.steps).map(st => {
+			const m = st.maneuver;
+			const verb = MANEUVER[m.type] || 'Continue';
+			const dir = m.type === 'arrive' ? '' : (m.modifier ? ` ${m.modifier}` : '');
+			const onto = st.name ? ` onto ${st.name}` : '';
+			return {text: m.type === 'arrive' ? 'Arrive at destination' : `${verb}${dir}${onto}`.replace('Head straight', 'Head'), lat: m.location[1], lon: m.location[0], distance_m: Math.round(st.distance)};
+		});
+		return {mode: mode === 'bike' ? 'bike' : 'walk', distance_m: Math.round(r.distance), duration_s: Math.round(r.duration), coords: r.geometry.coordinates.map(([lon, lat]) => [lat, lon]), steps};
+	});
+}
+
 // ---------- agent ----------
 
 const TOOLS = [
@@ -120,6 +140,8 @@ const TOOLS = [
 		parameters: {type: 'object', properties: {lat: {type: 'number'}, lon: {type: 'number'}, pitch: {type: 'number'}, yaw: {type: 'number'}, distance: {type: 'number'}, label: {type: 'string'}}, required: ['lat', 'lon']}}},
 	{type: 'function', function: {name: 'set_time', description: 'Set the map\'s simulated date/time (drives sun position, sky and lighting). ISO 8601 with timezone, e.g. 2026-09-11T17:56:00+09:00.',
 		parameters: {type: 'object', properties: {iso: {type: 'string'}}, required: ['iso']}}},
+	{type: 'function', function: {name: 'start_navigation', description: 'Plan a real walking or cycling route to a destination and start turn-by-turn navigation in the 3D map (overview first, then a 45-degree follow camera). Starts from the camera position unless from_lat/from_lon are given. Returns distance and duration.',
+		parameters: {type: 'object', properties: {lat: {type: 'number'}, lon: {type: 'number'}, mode: {type: 'string', enum: ['walk', 'bike']}, label: {type: 'string'}, from_lat: {type: 'number'}, from_lon: {type: 'number'}}, required: ['lat', 'lon', 'mode']}}},
 	{type: 'function', function: {name: 'show_places', description: 'Pin a short list of places in the UI so the user can click to fly to each one.',
 		parameters: {type: 'object', properties: {places: {type: 'array', items: {type: 'object', properties: {name: {type: 'string'}, lat: {type: 'number'}, lon: {type: 'number'}, note: {type: 'string'}}, required: ['name', 'lat', 'lon']}}}, required: ['places']}}}
 ];
@@ -129,6 +151,7 @@ function systemPrompt(ctx) {
 	return `You are the guide inside a live 3D map of the real world (OpenStreetMap buildings, real sun position, live weather).
 Current Tokyo time: ${now}. Camera is looking at lat ${ctx.lat?.toFixed?.(5)}, lon ${ctx.lon?.toFixed?.(5)}.
 Always use tools for facts — never invent places, coordinates or weather. Typical flow: search_place / find_nearby -> get_weather when timing or outdoors matters -> fly_to the best answer (and set_time when the user asks about a moment like sunset or tonight) -> show_places for options.
+When the user wants to go somewhere (walk, cycle, take me, directions), call start_navigation instead of fly_to; suggest cycling for >2 km and warn if rain is likely during the trip.
 Choose cinematic cameras: pitch 35-60, distance 250-900 for streets, 1500-4000 for districts.
 Reply in the user's language (Japanese or English), max 4 short sentences, concrete and friendly. Mention the weather when it affects the plan.`;
 }
@@ -164,6 +187,13 @@ async function runAgent({messages = [], camera = {}}) {
 					case 'search_place': result = await searchPlace(args.query, camera.lat != null ? camera : null); break;
 					case 'find_nearby': result = await findNearby(args.lat, args.lon, args.category, args.radius_m); break;
 					case 'get_weather': result = await getWeather(args.lat, args.lon); break;
+					case 'start_navigation': {
+						const from = args.from_lat != null ? {lat: args.from_lat, lon: args.from_lon} : camera;
+						const route = await getRoute(from, args, args.mode);
+						actions.push({type: 'navigate', label: args.label, route});
+						result = {ok: true, mode: route.mode, distance_m: route.distance_m, minutes: Math.round(route.duration_s / 60), first_steps: route.steps.slice(0, 3).map(x => x.text)};
+						break;
+					}
 					case 'fly_to': case 'set_time': case 'show_places':
 						actions.push({type: call.function.name, ...args});
 						result = {ok: true};
@@ -219,6 +249,12 @@ http.createServer(async (req, res) => {
 			const lat = parseFloat(url.searchParams.get('lat')), lon = parseFloat(url.searchParams.get('lon'));
 			if (Number.isNaN(lat) || Number.isNaN(lon)) return send(res, 400, {error: 'lat and lon required'});
 			return send(res, 200, await getWeather(lat, lon));
+		}
+		if (url.pathname === '/api/route') {
+			const [fLat, fLon] = (url.searchParams.get('from') || '').split(',').map(Number);
+			const [tLat, tLon] = (url.searchParams.get('to') || '').split(',').map(Number);
+			if ([fLat, fLon, tLat, tLon].some(Number.isNaN)) return send(res, 400, {error: 'from=lat,lon and to=lat,lon required'});
+			return send(res, 200, await getRoute({lat: fLat, lon: fLon}, {lat: tLat, lon: tLon}, url.searchParams.get('mode')));
 		}
 		if (url.pathname === '/api/agent' && req.method === 'POST') {
 			return send(res, 200, await runAgent(await readBody(req)));
